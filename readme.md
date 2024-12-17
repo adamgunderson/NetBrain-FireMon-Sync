@@ -21,15 +21,20 @@ This service synchronizes device inventory, configurations, and grouping between
 
 ## Installation
 
-1. Clone the repository:
+1. Download / Clone the repository:
 ```bash
-git clone [repository-url]
-cd netbrain-firemon-sync
+git clone https://github.com/adamgunderson/NetBrain-FireMon-Sync.git
+```
+or
+```
+wget https://github.com/adamgunderson/NetBrain-FireMon-Sync/archive/refs/heads/main.zip
+unzip main.zip
 ```
 
 2. Create and activate a virtual environment:
 ```bash
-python -m venv venv
+cd Netbrain-FireMon-Sync
+python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
@@ -111,12 +116,12 @@ Configure the mappings between NetBrain and FireMon in `sync-mappings.yaml`:
 
 1. Start the service:
 ```bash
-python main.py
+python3 main.py
 ```
 
 2. For dry run mode (no changes made):
 ```bash
-DRY_RUN=true python main.py
+DRY_RUN=true python3 main.py
 ```
 
 ### Service Operation
@@ -163,7 +168,3 @@ The service includes robust error handling:
 2. Verify API connectivity
 3. Confirm mapping configuration
 4. Ensure required permissions in both systems
-
-## License
-
-[License Information]
