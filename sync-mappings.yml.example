@@ -1,0 +1,67 @@
+# File: sync-mappings.yaml
+# Configuration mappings for NetBrain to FireMon sync
+
+# Maps top-level NetBrain sites to FireMon collector groups
+collector_mapping:
+  NA: "1716af41-caf5-40c6-a81b-84202fc640aa"
+  EU: "2826b52-d7b6-5bf7-bc2b-95313f751bb"
+  APAC: "3936c63-e8c7-6cg8-cd3c-06424g862cc"
+
+# Maps NetBrain device types (subTypeName) to FireMon device packs
+device_pack_mapping:
+  "Cisco IOS Switch":
+    device_pack_id: 25
+    artifact_id: "cisco_ios"
+    group_id: "com.fm.sm.dp.cisco-ios"
+    device_type: "ROUTER_SWITCH"
+    device_name: "IOS"
+  
+  "Juniper SRX Firewall":
+    device_pack_id: 57
+    artifact_id: "juniper_srx"
+    group_id: "com.fm.sm.dp.juniper_srx"
+    device_type: "FIREWALL"
+    device_name: "SRX"
+
+# Maps NetBrain CLI commands to FireMon configuration file names
+config_file_mapping:
+  "Cisco IOS Switch":
+    "show running-config": "config_xml"
+    "show version": "version_xml"
+    "show interfaces": "interfaces_xml"
+    "show ip route": "route_xml"
+  
+  "Juniper SRX Firewall":
+    "show configuration": "config_xml"
+    "show interfaces": "interfaces_xml"
+    "show version": "version_xml"
+    "show route":
+      BGP: "route_bgp"
+      OSPF: "route_ospf"
+      Static: "route_static"
+      Direct: "route_direct"
+      Local: "route_local"
+
+# Default FireMon settings for device creation
+default_settings:
+  retrieval_method: "FromDevice"
+  retrieval_timeout: 120
+  server_alive_interval: 30
+  suppress_fqdn_capabilities: false
+  use_cli_command_generation: false
+  use_private_config: false
+  log_monitoring_enabled: false
+  change_monitoring_enabled: false
+  scheduled_retrieval_enabled: false
+  check_for_change_enabled: false
+  skip_route: false
+  encoding: ""
+  batch_config_retrieval: false
+  deprecated_ca: false
+  retrieve_set_syntax_config: false
+  skip_application_file: false
+  reset_ssh_key_value: false
+  routes_from_config: false
+  authentication_method: "UserPassword"
+  fallback_authentication: false
+  check_for_change_on_detection: false
