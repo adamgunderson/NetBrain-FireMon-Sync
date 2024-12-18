@@ -41,6 +41,42 @@ class FireMonClient:
             logging.error(f"Failed to authenticate with FireMon: {str(e)}")
             raise
 
+    def get_all_devices(self) -> List[Dict[str, Any]]:
+        """Get all devices from FireMon"""
+        logging.debug("Getting all devices from FireMon")
+        all_devices = []
+        page = 0
+        page_size = 100
+        
+        while True:
+            try:
+                url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/device')
+                params = {
+                    'page': page,
+                    'pageSize': page_size
+                }
+                
+                response = self.session.get(url, params=params)
+                response.raise_for_status()
+                
+                data = response.json()
+                devices = data.get('results', [])
+                all_devices.extend(devices)
+                
+                logging.debug(f"Retrieved {len(devices)} devices from page {page}")
+                
+                if len(devices) < page_size:
+                    break
+                    
+                page += 1
+                
+            except Exception as e:
+                logging.error(f"Error retrieving devices from page {page}: {str(e)}")
+                break
+                
+        logging.debug(f"Total devices retrieved from FireMon: {len(all_devices)}")
+        return all_devices
+
     def search_device(self, hostname: str, mgmt_ip: str) -> Optional[Dict[str, Any]]:
         """Search for a device by hostname and management IP"""
         url = urljoin(self.host, '/securitymanager/api/siql/device/paged-search')

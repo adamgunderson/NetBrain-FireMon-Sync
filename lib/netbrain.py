@@ -63,13 +63,26 @@ class NetBrainClient:
 
     def get_site_devices(self, site_path: str) -> List[Dict[str, Any]]:
         """Get all devices in a site"""
-        url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/Devices')
-        params = {'sitePath': site_path}
-        
-        response = self.session.get(url, params=params)
-        response.raise_for_status()
-        
-        return response.json()['devices']
+        logging.debug(f"Getting devices for site: {site_path}")
+        try:
+            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/Devices')
+            params = {'sitePath': site_path}
+            
+            response = self.session.get(url, params=params)
+            response.raise_for_status()
+            
+            devices = response.json().get('devices', [])
+            logging.debug(f"Retrieved {len(devices)} devices from site {site_path}")
+            return devices
+            
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 400:
+                logging.warning(f"Site path '{site_path}' not found or invalid")
+                return []
+            raise
+        except Exception as e:
+            logging.error(f"Error getting devices for site {site_path}: {str(e)}")
+            raise
 
     def get_device_attributes(self, hostname: str) -> Dict[str, Any]:
         """Get device attributes"""
@@ -117,6 +130,35 @@ class NetBrainClient:
                 configs[cmd] = content_response.json()['data']['content']
 
         return configs
+
+    def get_device_config_time(self, device_id: str) -> Optional[str]:
+        """Get last configuration time for a device"""
+        logging.debug(f"Getting config time for device ID: {device_id}")
+        try:
+            # Get device configs summary
+            url = urljoin(self.host, '/ServicesAPI/DeDeviceData/CliCommandSummary')
+            data = {
+                'devId': device_id,
+                'folderType': 0,
+                'withData': False
+            }
+            
+            response = self.session.post(url, json=data)
+            response.raise_for_status()
+            
+            summary = response.json().get('data', {}).get('summary', [])
+            if summary:
+                # Return the most recent execution time
+                latest_time = summary[0].get('executeTime')
+                logging.debug(f"Latest config time for device {device_id}: {latest_time}")
+                return latest_time
+                
+            logging.debug(f"No config time found for device {device_id}")
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error getting config time for device {device_id}: {str(e)}")
+            return None
 
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """Make an authenticated request to NetBrain API"""

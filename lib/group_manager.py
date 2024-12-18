@@ -100,6 +100,68 @@ class GroupHierarchyManager:
 
         return changes
 
+    def validate_hierarchy(self) -> List[Dict[str, Any]]:
+        """Validate the group hierarchy structure"""
+        logging.debug("Starting group hierarchy validation")
+        issues = []
+        
+        try:
+            # Get all FireMon device groups
+            fm_groups = self.firemon.get_device_groups()
+            logging.debug(f"Retrieved {len(fm_groups)} device groups from FireMon")
+            
+            # Build group ID to group mapping for efficient lookups
+            group_map = {g['id']: g for g in fm_groups}
+            
+            # Check each group's parent-child relationships
+            for group in fm_groups:
+                group_id = group['id']
+                parent_id = group.get('parentId')
+                
+                logging.debug(f"Validating group: {group['name']} (ID: {group_id})")
+                
+                if parent_id:
+                    parent = group_map.get(parent_id)
+                    if not parent:
+                        logging.warning(f"Group {group['name']} has invalid parent ID: {parent_id}")
+                        issues.append({
+                            'type': 'missing_parent',
+                            'group_name': group['name'],
+                            'group_id': group_id,
+                            'parent_id': parent_id,
+                            'severity': 'error'
+                        })
+                        
+                # Check for circular references
+                if parent_id:
+                    visited = set()
+                    current_id = parent_id
+                    while current_id:
+                        if current_id in visited:
+                            logging.error(f"Circular reference detected for group {group['name']}")
+                            issues.append({
+                                'type': 'circular_reference',
+                                'group_name': group['name'],
+                                'group_id': group_id,
+                                'severity': 'error'
+                            })
+                            break
+                            
+                        visited.add(current_id)
+                        current = group_map.get(current_id)
+                        current_id = current.get('parentId') if current else None
+                        
+        except Exception as e:
+            logging.error(f"Error validating group hierarchy: {str(e)}")
+            issues.append({
+                'type': 'validation_error',
+                'message': str(e),
+                'severity': 'error'
+            })
+            
+        logging.debug(f"Validation complete. Found {len(issues)} issues")
+        return issues
+
     def _process_group_node(self, node: Dict[str, Any], fm_groups: Dict[str, Any],
                           hierarchy: Dict[str, Any], dry_run: bool) -> Optional[Dict[str, Any]]:
         """Process individual group node"""
