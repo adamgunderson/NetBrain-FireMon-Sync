@@ -36,6 +36,10 @@ class SyncManager:
         try:
             with self.sync_lock.acquire(timeout=30):
                 logging.info(f"Starting synchronization in {self.config_manager.sync_config.sync_mode} mode")
+                
+                # Ensure authentication before starting sync
+                self.netbrain.authenticate()
+                self.firemon.authenticate()
 
                 # Initial validation
                 initial_validation = self.validator.run_all_validations() if self.validator else {}
@@ -63,15 +67,8 @@ class SyncManager:
                     'unmapped_device_types': unmapped_types
                 }
 
-        except SyncLockError:
-            logging.error("Could not acquire sync lock - another sync may be running")
-            if self.sync_lock.is_locked():
-                lock_info = self.sync_lock.get_lock_info()
-                logging.info(f"Current lock info: {lock_info}")
-            raise
-
         except Exception as e:
-            logging.error(f"Error during sync: {str(e)}", exc_info=True)
+            logging.error(f"Error during sync: {str(e)}")
             raise
 
     def _sync_device_groups(self):

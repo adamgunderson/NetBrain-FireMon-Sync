@@ -27,11 +27,19 @@ class FireMonClient:
             'password': self.password
         }
         
-        response = self.session.post(url, json=data)
-        response.raise_for_status()
-        
-        self.token = response.json()['token']
-        self.session.headers.update({'Authorization': f'Bearer {self.token}'})
+        try:
+            response = self.session.post(url, json=data)
+            response.raise_for_status()
+            
+            self.token = response.json()['token']
+            self.session.headers.update({
+                'Authorization': f'Bearer {self.token}',
+                'Content-Type': 'application/json'
+            })
+            logging.info("Successfully authenticated with FireMon")
+        except Exception as e:
+            logging.error(f"Failed to authenticate with FireMon: {str(e)}")
+            raise
 
     def search_device(self, hostname: str, mgmt_ip: str) -> Optional[Dict[str, Any]]:
         """Search for a device by hostname and management IP"""

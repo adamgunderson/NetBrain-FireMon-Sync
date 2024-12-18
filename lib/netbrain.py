@@ -22,15 +22,34 @@ class NetBrainClient:
         url = urljoin(self.host, '/ServicesAPI/API/V1/Session')
         data = {
             'username': self.username,
-            'password': self.password,
-            'tenant': self.tenant
+            'password': self.password
         }
         
-        response = self.session.post(url, json=data)
-        response.raise_for_status()
+        try:
+            response = self.session.post(url, json=data)
+            response.raise_for_status()
+            
+            self.token = response.json()['token']
+            self.session.headers.update({'token': self.token})
+            logging.info("Successfully authenticated with NetBrain")
+        except Exception as e:
+            logging.error(f"Failed to authenticate with NetBrain: {str(e)}")
+            raise
+
+    def get_all_devices(self) -> List[Dict[str, Any]]:
+        """Get all devices from NetBrain"""
+        all_devices = []
+        sites = self.get_sites()
         
-        self.token = response.json()['token']
-        self.session.headers.update({'token': self.token})
+        for site in sites:
+            try:
+                site_devices = self.get_site_devices(site['sitePath'])
+                all_devices.extend(site_devices)
+            except Exception as e:
+                logging.error(f"Error getting devices for site {site['sitePath']}: {str(e)}")
+                continue
+                
+        return all_devices
 
     def get_sites(self) -> List[Dict[str, Any]]:
         """Get all NetBrain sites"""
