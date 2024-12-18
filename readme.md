@@ -40,11 +40,11 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 3. Install required packages:
 ```bash
-pip install -r requirements.txt
+python3 venv/bin/pip install -r requirements.txt
 ```
 or
 ```
-python3 venv/bin/pip install requests python-dotenv PyYAML urllib3 typing-extensions python-dateutil fcntl-linux fcntl-linux pytz pyyaml
+python3 venv/bin/pip install requests dataclasses python-dotenv pyyaml urllib3 typing-extensions python-dateutil fcntl-linux pytz pyyaml
 ```
 
 4. Create environment configuration:
