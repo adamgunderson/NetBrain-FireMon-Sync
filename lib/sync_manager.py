@@ -5,11 +5,11 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 
 from .sync_lock import SyncLock, SyncLockError
-from .timestamp_utils import TimestampUtil
+from .timestamp_utils import TimestampUtil  
 from .config_handler import ConfigHandler, ConfigValidationError
 from .group_hierarchy import GroupHierarchyManager
 from .config_mapping import ConfigMappingManager
-from .validation_manager import ValidationManager
+from .validation import ValidationManager
 
 class SyncManager:
     def __init__(self, netbrain_client, firemon_client, config_manager,

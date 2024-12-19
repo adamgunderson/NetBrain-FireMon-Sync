@@ -1,17 +1,33 @@
-# File: lib/firemon.py
-
-"""
-FireMon API Client
-Handles all interactions with the FireMon API
-"""
-
 import logging
 import requests
 from typing import Dict, List, Any, Optional
 from urllib.parse import urljoin
+from datetime import datetime
+
+class FireMonError(Exception):
+    """Base exception for FireMon API errors"""
+    pass
+
+class FireMonAuthError(FireMonError):
+    """Authentication related errors"""
+    pass
+
+class FireMonAPIError(FireMonError):
+    """General API errors"""
+    pass
 
 class FireMonClient:
+    """Client for interacting with the FireMon API"""
+    
     def __init__(self, host: str, username: str, password: str, domain_id: int):
+        """Initialize FireMon client
+        
+        Args:
+            host: FireMon server hostname/URL
+            username: API username
+            password: API password 
+            domain_id: FireMon domain ID
+        """
         self.host = host.rstrip('/')
         self.username = username
         self.password = password
@@ -37,9 +53,26 @@ class FireMonClient:
                 'Content-Type': 'application/json'
             })
             logging.info("Successfully authenticated with FireMon")
+            
+        except requests.exceptions.HTTPError as e:
+            raise FireMonAuthError(f"Authentication failed: {str(e)}")
         except Exception as e:
-            logging.error(f"Failed to authenticate with FireMon: {str(e)}")
-            raise
+            raise FireMonError(f"Error during authentication: {str(e)}")
+
+    def validate_token(self) -> bool:
+        """Check if current token is valid"""
+        if not self.token:
+            return False
+            
+        try:
+            url = urljoin(self.host, '/securitymanager/api/domain/1/devicegroup.json')
+            params = {'page': 0, 'pageSize': 1}
+            response = self.session.get(url, params=params)
+            return response.status_code != 401
+            
+        except Exception as e:
+            logging.error(f"Error validating token: {str(e)}")
+            return False
 
     def get_all_devices(self) -> List[Dict[str, Any]]:
         """Get all devices from FireMon"""
@@ -56,14 +89,9 @@ class FireMonClient:
                     'pageSize': page_size
                 }
                 
-                response = self.session.get(url, params=params)
-                response.raise_for_status()
-                
-                data = response.json()
-                devices = data.get('results', [])
+                response = self._request('GET', url, params=params)
+                devices = response.get('results', [])
                 all_devices.extend(devices)
-                
-                logging.debug(f"Retrieved {len(devices)} devices from page {page}")
                 
                 if len(devices) < page_size:
                     break
@@ -71,16 +99,15 @@ class FireMonClient:
                 page += 1
                 
             except Exception as e:
-                logging.error(f"Error retrieving devices from page {page}: {str(e)}")
-                break
+                raise FireMonAPIError(f"Error retrieving devices: {str(e)}")
                 
-        logging.debug(f"Total devices retrieved from FireMon: {len(all_devices)}")
         return all_devices
 
     def search_device(self, hostname: str, mgmt_ip: str) -> Optional[Dict[str, Any]]:
         """Search for a device by hostname and management IP"""
         url = urljoin(self.host, '/securitymanager/api/siql/device/paged-search')
-        query = f"domain {{ id = {self.domain_id} }}  AND device {{ name = '{hostname}' AND (( managementip equals '{mgmt_ip}' )) }}"
+        query = (f"domain {{ id = {self.domain_id} }} AND device {{ "
+                f"name = '{hostname}' AND (( managementip equals '{mgmt_ip}' )) }}")
         
         params = {
             'q': query,
@@ -89,25 +116,31 @@ class FireMonClient:
             'sort': 'name'
         }
         
-        response = self.session.get(url, params=params)
-        response.raise_for_status()
-        
-        results = response.json()['results']
-        return results[0] if results else None
+        try:
+            response = self._request('GET', url, params=params)
+            results = response.get('results', [])
+            return results[0] if results else None
+            
+        except Exception as e:
+            raise FireMonAPIError(f"Error searching for device: {str(e)}")
 
     def create_device(self, device_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new device in FireMon"""
         url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/device')
         params = {'manualRetrieval': 'false'}
         
-        response = self.session.post(url, json=device_data, params=params)
-        response.raise_for_status()
-        
-        return response.json()
+        try:
+            return self._request('POST', url, json=device_data, params=params)
+        except Exception as e:
+            raise FireMonAPIError(f"Error creating device: {str(e)}")
 
-    def import_device_config(self, device_id: int, files: Dict[str, str], change_user: str = 'NetBrain') -> Dict[str, Any]:
+    def import_device_config(self, device_id: int, files: Dict[str, str], 
+                           change_user: str = 'NetBrain') -> Dict[str, Any]:
         """Import device configuration files"""
-        url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/device/{device_id}/rev')
+        url = urljoin(
+            self.host,
+            f'/securitymanager/api/domain/{self.domain_id}/device/{device_id}/rev'
+        )
         params = {
             'action': 'IMPORT',
             'changeUser': change_user
@@ -119,28 +152,38 @@ class FireMonClient:
             for i, (filename, content) in enumerate(files.items())
         }
         
-        response = self.session.post(url, params=params, files=files_data)
-        response.raise_for_status()
-        
-        return response.json()
+        try:
+            response = self.session.post(url, params=params, files=files_data)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            raise FireMonAPIError(f"Error importing device config: {str(e)}")
 
-    def manage_device_license(self, device_id: int, add: bool = True, products: List[str] = None) -> None:
+    def manage_device_license(self, device_id: int, add: bool = True, 
+                            products: Optional[List[str]] = None) -> None:
         """Add or remove device licenses"""
         if products is None:
-            products = ['SM', 'PO', 'PP']  # Default products
+            products = ['SM', 'PO', 'PP']
             
         for product in products:
             url = urljoin(
                 self.host,
-                f'/securitymanager/api/domain/{self.domain_id}/device/license/{device_id}/product/{product}'
+                f'/securitymanager/api/domain/{self.domain_id}/device/license/'
+                f'{device_id}/product/{product}'
             )
             
-            if add:
-                response = self.session.post(url)
-            else:
-                response = self.session.delete(url)
+            try:
+                if add:
+                    response = self.session.post(url)
+                else:
+                    response = self.session.delete(url)
+                    
+                response.raise_for_status()
                 
-            response.raise_for_status()
+            except Exception as e:
+                raise FireMonAPIError(
+                    f"Error {'adding' if add else 'removing'} license {product}: {str(e)}"
+                )
 
     def get_device_groups(self) -> List[Dict[str, Any]]:
         """Get all device groups"""
@@ -155,20 +198,22 @@ class FireMonClient:
                 'sort': 'name'
             }
             
-            response = self.session.get(url, params=params)
-            response.raise_for_status()
-            
-            data = response.json()
-            all_groups.extend(data['results'])
-            
-            if len(data['results']) < data['pageSize']:
-                break
+            try:
+                response = self._request('GET', url, params=params)
+                all_groups.extend(response['results'])
                 
-            page += 1
+                if len(response['results']) < response['pageSize']:
+                    break
+                    
+                page += 1
+                
+            except Exception as e:
+                raise FireMonAPIError(f"Error getting device groups: {str(e)}")
             
         return all_groups
 
-    def create_device_group(self, name: str, description: str = '', parent_id: Optional[int] = None) -> Dict[str, Any]:
+    def create_device_group(self, name: str, description: str = '', 
+                          parent_id: Optional[int] = None) -> Dict[str, Any]:
         """Create a new device group"""
         url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/devicegroup.json')
         data = {
@@ -180,39 +225,50 @@ class FireMonClient:
         if parent_id:
             data['parentId'] = parent_id
         
-        response = self.session.post(url, json=data)
-        response.raise_for_status()
-        
-        return response.json()
+        try:
+            return self._request('POST', url, json=data)
+        except Exception as e:
+            raise FireMonAPIError(f"Error creating device group: {str(e)}")
 
     def update_device_group(self, group_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
         """Update a device group"""
-        url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/devicegroup/{group_id}')
+        url = urljoin(
+            self.host,
+            f'/securitymanager/api/domain/{self.domain_id}/devicegroup/{group_id}'
+        )
         
-        response = self.session.put(url, json=data)
-        response.raise_for_status()
-        
-        return response.json()
+        try:
+            return self._request('PUT', url, json=data)
+        except Exception as e:
+            raise FireMonAPIError(f"Error updating device group: {str(e)}")
 
     def add_device_to_group(self, group_id: int, device_id: int) -> None:
         """Add a device to a group"""
         url = urljoin(
             self.host,
-            f'/securitymanager/api/domain/{self.domain_id}/devicegroup/{group_id}/device/{device_id}'
+            f'/securitymanager/api/domain/{self.domain_id}/devicegroup/{group_id}/'
+            f'device/{device_id}'
         )
         
-        response = self.session.post(url)
-        response.raise_for_status()
+        try:
+            response = self.session.post(url)
+            response.raise_for_status()
+        except Exception as e:
+            raise FireMonAPIError(f"Error adding device to group: {str(e)}")
 
     def remove_device_from_group(self, group_id: int, device_id: int) -> None:
         """Remove a device from a group"""
         url = urljoin(
             self.host,
-            f'/securitymanager/api/domain/{self.domain_id}/devicegroup/{group_id}/device/{device_id}'
+            f'/securitymanager/api/domain/{self.domain_id}/devicegroup/{group_id}/'
+            f'device/{device_id}'
         )
         
-        response = self.session.delete(url)
-        response.raise_for_status()
+        try:
+            response = self.session.delete(url)
+            response.raise_for_status()
+        except Exception as e:
+            raise FireMonAPIError(f"Error removing device from group: {str(e)}")
 
     def get_device_revision(self, device_id: int) -> Optional[Dict[str, Any]]:
         """Get latest device revision details"""
@@ -224,23 +280,92 @@ class FireMonClient:
             'sort': '-createdate'
         }
         
-        response = self.session.get(url, params=params)
-        response.raise_for_status()
+        try:
+            response = self._request('GET', url, params=params)
+            results = response.get('results', [])
+            return results[0] if results else None
+        except Exception as e:
+            raise FireMonAPIError(f"Error getting device revision: {str(e)}")
+
+    def get_devices_in_group(self, group_id: int) -> List[Dict[str, Any]]:
+        """Get all devices in a device group"""
+        url = urljoin(
+            self.host,
+            f'/securitymanager/api/domain/{self.domain_id}/devicegroup/{group_id}/device.json'
+        )
         
-        results = response.json()['results']
-        return results[0] if results else None
+        all_devices = []
+        page = 0
+        while True:
+            params = {
+                'page': page,
+                'pageSize': 100
+            }
+            
+            try:
+                response = self._request('GET', url, params=params)
+                all_devices.extend(response['results'])
+                
+                if len(response['results']) < response['pageSize']:
+                    break
+                    
+                page += 1
+                
+            except Exception as e:
+                raise FireMonAPIError(f"Error getting devices in group: {str(e)}")
+            
+        return all_devices
+
+    def delete_device_group(self, group_id: int) -> None:
+        """Delete a device group"""
+        url = urljoin(
+            self.host,
+            f'/securitymanager/api/domain/{self.domain_id}/devicegroup/{group_id}'
+        )
+        
+        try:
+            response = self.session.delete(url)
+            response.raise_for_status()
+        except Exception as e:
+            raise FireMonAPIError(f"Error deleting device group: {str(e)}")
+
+    def find_group_by_path(self, path: str) -> Optional[Dict[str, Any]]:
+        """Find a device group by its path"""
+        # Get all groups and build path mapping
+        groups = self.get_device_groups()
+        path_parts = path.split('/')
+        current_group = None
+        
+        for part in path_parts:
+            found = False
+            for group in groups:
+                if group['name'] == part:
+                    if not current_group or group.get('parentId') == current_group['id']:
+                        current_group = group
+                        found = True
+                        break
+            
+            if not found:
+                return None
+                
+        return current_group
 
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """Make an authenticated request to FireMon API"""
         if not self.token:
             self.authenticate()
 
-        url = urljoin(self.host, endpoint)
-        response = self.session.request(method, url, **kwargs)
-        
-        if response.status_code == 401:  # Token expired
-            self.authenticate()
-            response = self.session.request(method, url, **kwargs)
-        
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = self.session.request(method, endpoint, **kwargs)
+            
+            if response.status_code == 401:  # Token expired
+                self.authenticate()
+                response = self.session.request(method, endpoint, **kwargs)
+            
+            response.raise_for_status()
+            return response.json()
+            
+        except requests.exceptions.RequestException as e:
+            raise FireMonAPIError(f"API request failed: {str(e)}")
+        except Exception as e:
+            raise FireMonError(f"Unexpected error: {str(e)}")
