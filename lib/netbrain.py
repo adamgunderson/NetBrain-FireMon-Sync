@@ -36,6 +36,18 @@ class NetBrainClient:
             logging.error(f"Failed to authenticate with NetBrain: {str(e)}")
             raise
 
+    def validate_token(self) -> bool:
+        """Check if current token is valid"""
+        if not self.token:
+            return False
+            
+        try:
+            # Make a test API call
+            response = self.session.get(urljoin(self.host, self.test_endpoint))
+            return response.status_code != 401
+        except:
+            return False
+
     def get_all_devices(self) -> List[Dict[str, Any]]:
         """Get all devices from NetBrain"""
         all_devices = []
@@ -53,34 +65,72 @@ class NetBrainClient:
 
     def get_sites(self) -> List[Dict[str, Any]]:
         """Get all NetBrain sites"""
-        url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/ChildSites')
-        params = {'sitePath': 'My Network'}
+        logging.debug("Getting NetBrain sites")
         
-        response = self.session.get(url, params=params)
-        response.raise_for_status()
-        
-        return response.json()['sites']
+        try:
+            # Ensure we're authenticated
+            if not self.token:
+                self.authenticate()
+            
+            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/ChildSites')
+            params = {'sitePath': 'My Network'}
+            
+            response = self.session.get(url, params=params)
+            
+            # Handle token expiration
+            if response.status_code == 401:
+                logging.debug("Token expired, re-authenticating...")
+                self.authenticate()
+                response = self.session.get(url, params=params)
+                
+            response.raise_for_status()
+            
+            sites = response.json().get('sites', [])
+            logging.debug(f"Retrieved {len(sites)} sites from NetBrain")
+            return sites
+            
+        except Exception as e:
+            logging.error(f"Error getting NetBrain sites: {str(e)}")
+            raise
 
     def get_site_devices(self, site_path: str) -> List[Dict[str, Any]]:
         """Get all devices in a site"""
         logging.debug(f"Getting devices for site: {site_path}")
+        
         try:
+            if not self.token:
+                self.authenticate()
+                
             url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/Devices')
             params = {'sitePath': site_path}
             
             response = self.session.get(url, params=params)
+            
+            # Handle token expiration
+            if response.status_code == 401:
+                logging.debug("Token expired, re-authenticating...")
+                self.authenticate()
+                response = self.session.get(url, params=params)
+                
+            if response.status_code == 400:
+                logging.warning(f"Invalid site path '{site_path}'. Attempting to fix encoding...")
+                
+                # Try with explicit URL encoding
+                from urllib.parse import quote
+                encoded_path = quote(site_path, safe='')
+                params = {'sitePath': encoded_path}
+                response = self.session.get(url, params=params)
+                
             response.raise_for_status()
             
             devices = response.json().get('devices', [])
             logging.debug(f"Retrieved {len(devices)} devices from site {site_path}")
             return devices
             
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 400:
+        except Exception as e:
+            if isinstance(e, requests.exceptions.HTTPError) and e.response.status_code == 400:
                 logging.warning(f"Site path '{site_path}' not found or invalid")
                 return []
-            raise
-        except Exception as e:
             logging.error(f"Error getting devices for site {site_path}: {str(e)}")
             raise
 

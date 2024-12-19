@@ -306,51 +306,80 @@ class GroupHierarchyManager:
 
     def validate_hierarchy(self) -> List[Dict[str, Any]]:
         """Validate entire group hierarchy"""
+        logging.debug("Starting group hierarchy validation")
         issues = []
+        
         try:
+            # Get current device groups from FireMon
             fm_groups = self.firemon.get_device_groups()
+            logging.debug(f"Retrieved {len(fm_groups)} device groups from FireMon")
+            
+            # Create lookup map
             group_map = {g['id']: g for g in fm_groups}
             
+            # Check each group
             for group in fm_groups:
-                # Skip root groups
-                if not group.get('parentId'):
-                    continue
-                    
-                parent = group_map.get(group['parentId'])
-                if not parent:
-                    issues.append({
-                        'type': 'missing_parent',
-                        'group': group['name'],
-                        'group_id': group['id'],
-                        'parent_id': group['parentId'],
-                        'severity': 'error'
-                    })
-                    continue
-                    
+                logging.debug(f"Validating group: {group['name']}")
+                
+                # Check parent relationship
+                if group.get('parentId'):
+                    parent = group_map.get(group['parentId'])
+                    if not parent:
+                        msg = f"Group {group['name']} has missing parent ID: {group['parentId']}"
+                        logging.error(msg)
+                        issues.append({
+                            'type': 'missing_parent',
+                            'group': group['name'],
+                            'group_id': group['id'],
+                            'parent_id': group['parentId'],
+                            'severity': 'error',
+                            'message': msg
+                        })
+                        
                 # Check for circular references
-                visited = set()
-                current = group
-                while current.get('parentId'):
-                    if current['id'] in visited:
+                current_group = group
+                visited = {group['id']}
+                
+                while current_group.get('parentId'):
+                    parent_id = current_group['parentId']
+                    if parent_id in visited:
+                        msg = f"Circular reference detected for group {group['name']}"
+                        logging.error(msg)
                         issues.append({
                             'type': 'circular_reference',
                             'group': group['name'],
-                            'path': [g['name'] for g in visited],
-                            'severity': 'error'
+                            'path': [g for g in visited],
+                            'severity': 'error',
+                            'message': msg
                         })
                         break
                         
-                    visited.add(current['id'])
-                    current = group_map.get(current['parentId'])
-                    if not current:
-                        break
+                    visited.add(parent_id)
+                    current_group = group_map.get(parent_id, {})
+                    
+                # Check child references
+                if 'childDeviceGroups' in group:
+                    child_ids = [c['id'] for c in fm_groups if c.get('parentId') == group['id']]
+                    if len(child_ids) != group['childDeviceGroups']:
+                        msg = f"Group {group['name']} has inconsistent child count"
+                        logging.warning(msg)
+                        issues.append({
+                            'type': 'inconsistent_children',
+                            'group': group['name'],
+                            'expected': group['childDeviceGroups'],
+                            'actual': len(child_ids),
+                            'severity': 'warning',
+                            'message': msg
+                        })
                         
         except Exception as e:
-            logging.error(f"Error validating hierarchy: {str(e)}")
+            msg = f"Error validating hierarchy: {str(e)}"
+            logging.error(msg)
             issues.append({
                 'type': 'validation_error',
-                'error': str(e),
+                'message': msg,
                 'severity': 'error'
             })
             
+        logging.debug(f"Validation complete, found {len(issues)} issues")
         return issues
