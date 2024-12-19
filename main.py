@@ -16,10 +16,10 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from lib.netbrain import NetBrainClient
-from lib.firemon import FireMonClient
+from lib.firemon import FireMonClient 
 from lib.config import ConfigManager
 from lib.sync_manager import SyncManager
-from lib.group_manager import GroupHierarchyManager
+from lib.group_hierarchy import GroupHierarchyManager
 from lib.validation import ValidationManager
 from lib.report import ReportManager
 from lib.logger import setup_logging

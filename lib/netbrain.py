@@ -64,14 +64,22 @@ class NetBrainClient:
         return all_devices
 
     def get_sites(self) -> List[Dict[str, Any]]:
-        """Get all NetBrain sites"""
+        """
+        Get all NetBrain sites starting from root 'My Network'
+        Handles site hierarchy traversal and error conditions
+        
+        Returns:
+            List of site dictionaries containing site information and hierarchy
+        """
         logging.debug("Getting NetBrain sites")
+        all_sites = []
         
         try:
             # Ensure we're authenticated
             if not self.token:
                 self.authenticate()
             
+            # First get root level sites
             url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/ChildSites')
             params = {'sitePath': 'My Network'}
             
@@ -85,16 +93,71 @@ class NetBrainClient:
                 
             response.raise_for_status()
             
-            sites = response.json().get('sites', [])
-            logging.debug(f"Retrieved {len(sites)} sites from NetBrain")
-            return sites
+            root_sites = response.json().get('sites', [])
+            all_sites.extend(root_sites)
             
+            # Process container sites to get full hierarchy
+            for site in root_sites:
+                if site.get('isContainer'):
+                    child_sites = self._get_child_sites(site['sitePath'])
+                    all_sites.extend(child_sites)
+            
+            logging.debug(f"Retrieved total of {len(all_sites)} sites from NetBrain")
+            return all_sites
+            
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 400:
+                logging.warning(f"Invalid site path 'My Network'. API Response: {e.response.text}")
+                return []
+            logging.error(f"HTTP error getting NetBrain sites: {str(e)}")
+            raise
         except Exception as e:
             logging.error(f"Error getting NetBrain sites: {str(e)}")
             raise
 
+    def _get_child_sites(self, parent_path: str) -> List[Dict[str, Any]]:
+        """
+        Recursively get child sites for a given parent path
+        
+        Args:
+            parent_path: Full site path of parent site
+            
+        Returns:
+            List of child site dictionaries
+        """
+        child_sites = []
+        try:
+            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/ChildSites')
+            params = {'sitePath': parent_path}
+            
+            response = self.session.get(url, params=params)
+            response.raise_for_status()
+            
+            sites = response.json().get('sites', [])
+            child_sites.extend(sites)
+            
+            # Recursively get children of container sites
+            for site in sites:
+                if site.get('isContainer'):
+                    grandchildren = self._get_child_sites(site['sitePath'])
+                    child_sites.extend(grandchildren)
+                    
+            return child_sites
+            
+        except Exception as e:
+            logging.error(f"Error getting child sites for {parent_path}: {str(e)}")
+            return []
+
     def get_site_devices(self, site_path: str) -> List[Dict[str, Any]]:
-        """Get all devices in a site"""
+        """
+        Get all devices in a site
+        
+        Args:
+            site_path: Full path of the site to get devices from
+            
+        Returns:
+            List of device dictionaries
+        """
         logging.debug(f"Getting devices for site: {site_path}")
         
         try:
@@ -102,7 +165,10 @@ class NetBrainClient:
                 self.authenticate()
                 
             url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/Devices')
-            params = {'sitePath': site_path}
+            
+            # URL encode the site path properly
+            encoded_path = quote(site_path, safe='')
+            params = {'sitePath': encoded_path}
             
             response = self.session.get(url, params=params)
             
@@ -113,13 +179,8 @@ class NetBrainClient:
                 response = self.session.get(url, params=params)
                 
             if response.status_code == 400:
-                logging.warning(f"Invalid site path '{site_path}'. Attempting to fix encoding...")
-                
-                # Try with explicit URL encoding
-                from urllib.parse import quote
-                encoded_path = quote(site_path, safe='')
-                params = {'sitePath': encoded_path}
-                response = self.session.get(url, params=params)
+                logging.warning(f"Site path '{site_path}' not found or invalid. Response: {response.text}")
+                return []
                 
             response.raise_for_status()
             
@@ -127,10 +188,13 @@ class NetBrainClient:
             logging.debug(f"Retrieved {len(devices)} devices from site {site_path}")
             return devices
             
-        except Exception as e:
-            if isinstance(e, requests.exceptions.HTTPError) and e.response.status_code == 400:
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 400:
                 logging.warning(f"Site path '{site_path}' not found or invalid")
                 return []
+            logging.error(f"HTTP error getting devices for site {site_path}: {str(e)}")
+            raise
+        except Exception as e:
             logging.error(f"Error getting devices for site {site_path}: {str(e)}")
             raise
 
