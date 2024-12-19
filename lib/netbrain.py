@@ -1,22 +1,47 @@
 # lib/netbrain.py
 """
 NetBrain API Client
+Handles all interactions with the NetBrain API including authentication, site hierarchy retrieval,
+device information and configuration management
 """
 
 import logging
 import requests
-from typing import Dict, List, Any, Optional
-from urllib.parse import urljoin
+from typing import Dict, List, Any, Optional, Set
+from urllib.parse import urljoin, quote
+from functools import lru_cache
+from datetime import datetime
+
+class NetBrainError(Exception):
+    """Base exception for NetBrain API errors"""
+    pass
+
+class NetBrainAuthError(NetBrainError):
+    """Authentication related errors"""
+    pass
+
+class NetBrainAPIError(NetBrainError):
+    """General API errors"""
+    pass
 
 class NetBrainClient:
     def __init__(self, host: str, username: str, password: str, tenant: str):
+        """Initialize NetBrain client
+        
+        Args:
+            host: NetBrain server hostname/URL
+            username: API username
+            password: API password 
+            tenant: NetBrain tenant name
+        """
         self.host = host.rstrip('/')
         self.username = username
         self.password = password
         self.tenant = tenant
         self.session = requests.Session()
         self.token = None
-        
+        self._processed_sites = set()  # Track processed sites to prevent recursion
+
     def authenticate(self) -> None:
         """Authenticate with NetBrain and get token"""
         url = urljoin(self.host, '/ServicesAPI/API/V1/Session')
@@ -32,9 +57,11 @@ class NetBrainClient:
             self.token = response.json()['token']
             self.session.headers.update({'token': self.token})
             logging.info("Successfully authenticated with NetBrain")
+            
+        except requests.exceptions.HTTPError as e:
+            raise NetBrainAuthError(f"Authentication failed: {str(e)}")
         except Exception as e:
-            logging.error(f"Failed to authenticate with NetBrain: {str(e)}")
-            raise
+            raise NetBrainError(f"Error during authentication: {str(e)}")
 
     def validate_token(self) -> bool:
         """Check if current token is valid"""
@@ -42,9 +69,12 @@ class NetBrainClient:
             return False
             
         try:
-            # Make a test API call
-            response = self.session.get(urljoin(self.host, self.test_endpoint))
+            # Make a test API call to verify token
+            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/ChildSites')
+            params = {'sitePath': 'My Network'}
+            response = self.session.get(url, params=params)
             return response.status_code != 401
+            
         except:
             return False
 
@@ -73,6 +103,7 @@ class NetBrainClient:
         """
         logging.debug("Getting NetBrain sites")
         all_sites = []
+        self._processed_sites.clear()  # Clear processed sites tracking
         
         try:
             # Ensure we're authenticated
@@ -98,7 +129,7 @@ class NetBrainClient:
             
             # Process container sites to get full hierarchy
             for site in root_sites:
-                if site.get('isContainer'):
+                if site.get('isContainer') and site['sitePath'] not in self._processed_sites:
                     child_sites = self._get_child_sites(site['sitePath'])
                     all_sites.extend(child_sites)
             
@@ -115,17 +146,28 @@ class NetBrainClient:
             logging.error(f"Error getting NetBrain sites: {str(e)}")
             raise
 
-    def _get_child_sites(self, parent_path: str) -> List[Dict[str, Any]]:
+    def _get_child_sites(self, parent_path: str, depth: int = 0) -> List[Dict[str, Any]]:
         """
-        Recursively get child sites for a given parent path
+        Recursively get child sites for a given parent path with depth tracking
         
         Args:
             parent_path: Full site path of parent site
+            depth: Current recursion depth, used to prevent infinite recursion
             
         Returns:
             List of child site dictionaries
         """
+        # Prevent infinite recursion
+        if depth > 10:  # Maximum depth limit
+            logging.warning(f"Maximum depth reached for path: {parent_path}")
+            return []
+            
+        if parent_path in self._processed_sites:
+            return []
+            
+        self._processed_sites.add(parent_path)
         child_sites = []
+        
         try:
             url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/ChildSites')
             params = {'sitePath': parent_path}
@@ -138,8 +180,8 @@ class NetBrainClient:
             
             # Recursively get children of container sites
             for site in sites:
-                if site.get('isContainer'):
-                    grandchildren = self._get_child_sites(site['sitePath'])
+                if site.get('isContainer') and site['sitePath'] not in self._processed_sites:
+                    grandchildren = self._get_child_sites(site['sitePath'], depth + 1)
                     child_sites.extend(grandchildren)
                     
             return child_sites
@@ -148,6 +190,7 @@ class NetBrainClient:
             logging.error(f"Error getting child sites for {parent_path}: {str(e)}")
             return []
 
+    @lru_cache(maxsize=128)
     def get_site_devices(self, site_path: str) -> List[Dict[str, Any]]:
         """
         Get all devices in a site
@@ -165,10 +208,7 @@ class NetBrainClient:
                 self.authenticate()
                 
             url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/Devices')
-            
-            # URL encode the site path properly
-            encoded_path = quote(site_path, safe='')
-            params = {'sitePath': encoded_path}
+            params = {'sitePath': site_path}  # Using original path as NetBrain handles encoding
             
             response = self.session.get(url, params=params)
             
@@ -203,47 +243,50 @@ class NetBrainClient:
         url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/Attributes')
         params = {'hostname': hostname}
         
-        response = self.session.get(url, params=params)
-        response.raise_for_status()
-        
-        return response.json()['attributes']
+        try:
+            response = self._request('GET', url, params=params)
+            return response['attributes']
+        except Exception as e:
+            logging.error(f"Error getting attributes for device {hostname}: {str(e)}")
+            raise
 
     def get_device_configs(self, device_id: str) -> Dict[str, Any]:
         """Get device configuration data"""
-        # First get available configs
-        url = urljoin(self.host, '/ServicesAPI/DeDeviceData/CliCommandSummary')
-        data = {
-            'devId': device_id,
-            'folderType': 0,
-            'withData': False
-        }
-        
-        response = self.session.post(url, json=data)
-        response.raise_for_status()
-        
-        configs = {}
-        summary = response.json()['data']['summary']
-        
-        # Get most recent execution
-        if summary and summary[0]['commands']:
-            latest = summary[0]
+        try:
+            # First get available configs
+            url = urljoin(self.host, '/ServicesAPI/DeDeviceData/CliCommandSummary')
+            data = {
+                'devId': device_id,
+                'folderType': 0,
+                'withData': False
+            }
             
-            # Get content for each command
-            for cmd, location in zip(latest['commands'], latest['locations']):
-                content_url = urljoin(self.host, '/ServicesAPI/DeDeviceData/CliCommand')
-                content_data = {
-                    'sourceType': location['sourceType'],
-                    'id': location['id'],
-                    'md5': location['md5'],
-                    'location': location['location']
-                }
+            response = self._request('POST', url, json=data)
+            configs = {}
+            summary = response.get('data', {}).get('summary', [])
+            
+            # Get most recent execution
+            if summary and summary[0].get('commands'):
+                latest = summary[0]
                 
-                content_response = self.session.post(content_url, json=content_data)
-                content_response.raise_for_status()
-                
-                configs[cmd] = content_response.json()['data']['content']
+                # Get content for each command
+                for cmd, location in zip(latest['commands'], latest['locations']):
+                    content_url = urljoin(self.host, '/ServicesAPI/DeDeviceData/CliCommand')
+                    content_data = {
+                        'sourceType': location['sourceType'],
+                        'id': location['id'],
+                        'md5': location['md5'],
+                        'location': location['location']
+                    }
+                    
+                    content_response = self._request('POST', content_url, json=content_data)
+                    configs[cmd] = content_response['data']['content']
 
-        return configs
+            return configs
+            
+        except Exception as e:
+            logging.error(f"Error getting configs for device {device_id}: {str(e)}")
+            raise
 
     def get_device_config_time(self, device_id: str) -> Optional[str]:
         """Get last configuration time for a device"""
@@ -257,10 +300,9 @@ class NetBrainClient:
                 'withData': False
             }
             
-            response = self.session.post(url, json=data)
-            response.raise_for_status()
+            response = self._request('POST', url, json=data)
+            summary = response.get('data', {}).get('summary', [])
             
-            summary = response.json().get('data', {}).get('summary', [])
             if summary:
                 # Return the most recent execution time
                 latest_time = summary[0].get('executeTime')
@@ -279,12 +321,17 @@ class NetBrainClient:
         if not self.token:
             self.authenticate()
 
-        url = urljoin(self.host, endpoint)
-        response = self.session.request(method, url, **kwargs)
-        
-        if response.status_code == 401:  # Token expired
-            self.authenticate()
-            response = self.session.request(method, url, **kwargs)
-        
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = self.session.request(method, endpoint, **kwargs)
+            
+            if response.status_code == 401:  # Token expired
+                self.authenticate()
+                response = self.session.request(method, endpoint, **kwargs)
+            
+            response.raise_for_status()
+            return response.json()
+            
+        except requests.exceptions.HTTPError as e:
+            raise NetBrainAPIError(f"API request failed: {str(e)}")
+        except Exception as e:
+            raise NetBrainError(f"Unexpected error: {str(e)}")
