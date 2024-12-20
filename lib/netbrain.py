@@ -70,8 +70,8 @@ class NetBrainClient:
             
         try:
             # Make a test API call to verify token
-            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/ChildSites')
-            params = {'sitePath': 'My Network'}
+            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices')
+            params = {'pageSize': 1}
             response = self.session.get(url, params=params)
             return response.status_code != 401
             
@@ -121,6 +121,11 @@ class NetBrainClient:
                 logging.debug("Token expired, re-authenticating...")
                 self.authenticate()
                 response = self.session.get(url, params=params)
+                
+            if response.status_code == 400:
+                logging.warning("Invalid site path 'My Network'. Attempting to retrieve all sites...")
+                url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites')
+                response = self.session.get(url)
                 
             response.raise_for_status()
             
@@ -208,7 +213,7 @@ class NetBrainClient:
                 self.authenticate()
                 
             url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/Devices')
-            params = {'sitePath': site_path}  # Using original path as NetBrain handles encoding
+            params = {'sitePath': site_path}
             
             response = self.session.get(url, params=params)
             
@@ -252,6 +257,8 @@ class NetBrainClient:
 
     def get_device_configs(self, device_id: str) -> Dict[str, Any]:
         """Get device configuration data"""
+        configs = {}
+        
         try:
             # First get available configs
             url = urljoin(self.host, '/ServicesAPI/DeDeviceData/CliCommandSummary')
@@ -262,7 +269,6 @@ class NetBrainClient:
             }
             
             response = self._request('POST', url, json=data)
-            configs = {}
             summary = response.get('data', {}).get('summary', [])
             
             # Get most recent execution
@@ -280,13 +286,17 @@ class NetBrainClient:
                     }
                     
                     content_response = self._request('POST', content_url, json=content_data)
-                    configs[cmd] = content_response['data']['content']
+                    
+                    if content_response.get('data', {}).get('content'):
+                        configs[cmd] = content_response['data']['content']
+                    else:
+                        logging.warning(f"Config content not found for command '{cmd}' on device {device_id}")
 
             return configs
             
         except Exception as e:
             logging.error(f"Error getting configs for device {device_id}: {str(e)}")
-            raise
+            return {}
 
     def get_device_config_time(self, device_id: str) -> Optional[str]:
         """Get last configuration time for a device"""
@@ -300,7 +310,13 @@ class NetBrainClient:
                 'withData': False
             }
             
+            logging.debug(f"Making API request to {url} with data: {data}")
+            
             response = self._request('POST', url, json=data)
+            
+            logging.debug(f"API response status code: {response.get('operationResult', {}).get('ResultCode')}")
+            logging.debug(f"API response content: {response}")
+            
             summary = response.get('data', {}).get('summary', [])
             
             if summary:
@@ -309,7 +325,7 @@ class NetBrainClient:
                 logging.debug(f"Latest config time for device {device_id}: {latest_time}")
                 return latest_time
                 
-            logging.debug(f"No config time found for device {device_id}")
+            logging.warning(f"Config summary not found for device {device_id}")
             return None
             
         except Exception as e:
