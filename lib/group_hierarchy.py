@@ -3,6 +3,7 @@
 import logging
 from typing import Dict, List, Set, Optional, Any
 from dataclasses import dataclass
+from collections import defaultdict
 
 @dataclass
 class GroupNode:

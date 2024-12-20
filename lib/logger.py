@@ -1,33 +1,39 @@
 # lib/logger.py
 
-"""
-Logger configuration for the sync service
-"""
-
 import os
 import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from typing import Optional
+from pathlib import Path
 
 def setup_logging(level: Optional[str] = None) -> None:
-    """Configure logging for the application"""
-    # Get log settings from environment or use defaults
+    """
+    Configure logging for the application
+    
+    Args:
+        level: Optional log level override from command line
+    """
+    # Command line argument takes precedence over environment variable
     if level is None:
         level = os.getenv('LOG_LEVEL', 'INFO').upper()
     else:
         level = level.upper()
 
+    # Get log settings from environment
     log_file = os.getenv('LOG_FILE', 'sync-service.log')
-    log_dir = 'logs'
+    log_dir = os.getenv('LOG_DIR', 'logs')
+    max_bytes = int(os.getenv('LOG_MAX_BYTES', '10485760'))  # 10MB default
+    backup_count = int(os.getenv('LOG_BACKUP_COUNT', '5'))
     
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+    # Create log directory if it doesn't exist
+    log_path = Path(log_dir) / log_file
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     
-    log_path = os.path.join(log_dir, log_file)
-    
-    # Configure root logger
+    # Remove any existing handlers
     logger = logging.getLogger()
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
     
     # Set log level
     try:
@@ -56,8 +62,8 @@ def setup_logging(level: Optional[str] = None) -> None:
     # File handler with rotation
     file_handler = RotatingFileHandler(
         log_path,
-        maxBytes=10*1024*1024,  # 10MB
-        backupCount=5
+        maxBytes=max_bytes,
+        backupCount=backup_count
     )
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)

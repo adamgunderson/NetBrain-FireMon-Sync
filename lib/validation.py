@@ -1,4 +1,4 @@
-# sync_service/lib/validation.py
+# lib/validation.py
 
 import logging
 from typing import Dict, List, Any, Optional

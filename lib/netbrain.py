@@ -1,12 +1,14 @@
 # lib/netbrain.py
+
 """
 NetBrain API Client
-Handles all interactions with the NetBrain API including authentication, site hierarchy retrieval,
-device information and configuration management
+Handles all interactions with the NetBrain API including authentication, device inventory retrieval,
+and configuration management
 """
 
 import logging
 import requests
+import json
 from typing import Dict, List, Any, Optional, Set
 from urllib.parse import urljoin, quote
 from functools import lru_cache
@@ -25,25 +27,31 @@ class NetBrainAPIError(NetBrainError):
     pass
 
 class NetBrainClient:
-    def __init__(self, host: str, username: str, password: str, tenant: str):
-        """Initialize NetBrain client
-        
-        Args:
-            host: NetBrain server hostname/URL
-            username: API username
-            password: API password 
-            tenant: NetBrain tenant name
+    def __init__(self, host: str = None, username: str = None, 
+                 password: str = None, tenant: str = None,
+                 config_manager = None):
         """
-        self.host = host.rstrip('/')
-        self.username = username
-        self.password = password
-        self.tenant = tenant
+        Initialize NetBrain client with environment variables or provided values
+        """
+        self.host = (host or os.getenv('NETBRAIN_HOST', '')).rstrip('/')
+        self.username = username or os.getenv('NETBRAIN_USERNAME', '')
+        self.password = password or os.getenv('NETBRAIN_PASSWORD', '')
+        self.tenant = tenant or os.getenv('NETBRAIN_TENANT', 'Default')
+        
+        if not all([self.host, self.username, self.password]):
+            raise ValueError("Missing required NetBrain credentials")
+            
         self.session = requests.Session()
         self.token = None
-        self._processed_sites = set()  # Track processed sites to prevent recursion
+        self.config_manager = config_manager
 
     def authenticate(self) -> None:
-        """Authenticate with NetBrain and get token"""
+        """
+        Authenticate with NetBrain and get token
+        Raises:
+            NetBrainAuthError: If authentication fails
+            NetBrainError: For other errors during authentication
+        """
         url = urljoin(self.host, '/ServicesAPI/API/V1/Session')
         data = {
             'username': self.username,
@@ -64,199 +72,162 @@ class NetBrainClient:
             raise NetBrainError(f"Error during authentication: {str(e)}")
 
     def validate_token(self) -> bool:
-        """Check if current token is valid"""
+        """
+        Check if current token is valid
+        Returns:
+            bool: True if token is valid, False otherwise
+        """
         if not self.token:
             return False
             
         try:
-            # Make a test API call to verify token
-            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices')
-            params = {'pageSize': 1}
-            response = self.session.get(url, params=params)
+            url = urljoin(self.host, '/ServicesAPI/inventoryreport/data/list')
+            payload = {
+                "skip": 0,
+                "limit": 1
+            }
+            response = self.session.post(url, json=payload)
             return response.status_code != 401
             
         except:
             return False
 
     def get_all_devices(self) -> List[Dict[str, Any]]:
-        """Get all devices from NetBrain"""
-        all_devices = []
-        sites = self.get_sites()
+        """
+        Get all devices from NetBrain using the Inventory List API
+        Filters devices based on device type mappings in config
         
-        for site in sites:
+        Returns:
+            List of device dictionaries
+            
+        Raises:
+            NetBrainError: If ConfigManager is not provided or API errors occur
+        """
+        logging.debug("Getting all devices from NetBrain inventory")
+        
+        if not self.config_manager:
+            raise NetBrainError("ConfigManager required for device type filtering")
+            
+        all_devices = []
+        device_types = self.config_manager.get_mapped_device_types()
+        
+        for device_type in device_types:
             try:
-                site_devices = self.get_site_devices(site['sitePath'])
-                all_devices.extend(site_devices)
+                devices = self._get_devices_by_type(device_type)
+                all_devices.extend(devices)
             except Exception as e:
-                logging.error(f"Error getting devices for site {site['sitePath']}: {str(e)}")
+                logging.error(f"Error getting devices for type {device_type}: {str(e)}")
                 continue
                 
+        logging.info(f"Retrieved {len(all_devices)} total devices from NetBrain")
         return all_devices
 
-    def get_sites(self) -> List[Dict[str, Any]]:
+    def _get_devices_by_type(self, device_type: str, 
+                           batch_size: int = 500) -> List[Dict[str, Any]]:
         """
-        Get all NetBrain sites starting from root 'My Network'
-        Handles site hierarchy traversal and error conditions
-        
-        Returns:
-            List of site dictionaries containing site information and hierarchy
-        """
-        logging.debug("Getting NetBrain sites")
-        all_sites = []
-        self._processed_sites.clear()  # Clear processed sites tracking
-        
-        try:
-            # Ensure we're authenticated
-            if not self.token:
-                self.authenticate()
-            
-            # First get root level sites
-            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/ChildSites')
-            params = {'sitePath': 'My Network'}
-            
-            response = self.session.get(url, params=params)
-            
-            # Handle token expiration
-            if response.status_code == 401:
-                logging.debug("Token expired, re-authenticating...")
-                self.authenticate()
-                response = self.session.get(url, params=params)
-                
-            if response.status_code == 400:
-                logging.warning("Invalid site path 'My Network'. Attempting to retrieve all sites...")
-                url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites')
-                response = self.session.get(url)
-                
-            response.raise_for_status()
-            
-            root_sites = response.json().get('sites', [])
-            all_sites.extend(root_sites)
-            
-            # Process container sites to get full hierarchy
-            for site in root_sites:
-                if site.get('isContainer') and site['sitePath'] not in self._processed_sites:
-                    child_sites = self._get_child_sites(site['sitePath'])
-                    all_sites.extend(child_sites)
-            
-            logging.debug(f"Retrieved total of {len(all_sites)} sites from NetBrain")
-            return all_sites
-            
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 400:
-                logging.warning(f"Invalid site path 'My Network'. API Response: {e.response.text}")
-                return []
-            logging.error(f"HTTP error getting NetBrain sites: {str(e)}")
-            raise
-        except Exception as e:
-            logging.error(f"Error getting NetBrain sites: {str(e)}")
-            raise
-
-    def _get_child_sites(self, parent_path: str, depth: int = 0) -> List[Dict[str, Any]]:
-        """
-        Recursively get child sites for a given parent path with depth tracking
+        Get devices of a specific type using the Inventory List API
         
         Args:
-            parent_path: Full site path of parent site
-            depth: Current recursion depth, used to prevent infinite recursion
-            
-        Returns:
-            List of child site dictionaries
-        """
-        # Prevent infinite recursion
-        if depth > 10:  # Maximum depth limit
-            logging.warning(f"Maximum depth reached for path: {parent_path}")
-            return []
-            
-        if parent_path in self._processed_sites:
-            return []
-            
-        self._processed_sites.add(parent_path)
-        child_sites = []
-        
-        try:
-            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/ChildSites')
-            params = {'sitePath': parent_path}
-            
-            response = self.session.get(url, params=params)
-            response.raise_for_status()
-            
-            sites = response.json().get('sites', [])
-            child_sites.extend(sites)
-            
-            # Recursively get children of container sites
-            for site in sites:
-                if site.get('isContainer') and site['sitePath'] not in self._processed_sites:
-                    grandchildren = self._get_child_sites(site['sitePath'], depth + 1)
-                    child_sites.extend(grandchildren)
-                    
-            return child_sites
-            
-        except Exception as e:
-            logging.error(f"Error getting child sites for {parent_path}: {str(e)}")
-            return []
-
-    @lru_cache(maxsize=128)
-    def get_site_devices(self, site_path: str) -> List[Dict[str, Any]]:
-        """
-        Get all devices in a site
-        
-        Args:
-            site_path: Full path of the site to get devices from
+            device_type: Device type to search for
+            batch_size: Number of records to retrieve per request
             
         Returns:
             List of device dictionaries
+            
+        Raises:
+            NetBrainAPIError: If API request fails
         """
-        logging.debug(f"Getting devices for site: {site_path}")
+        url = urljoin(self.host, '/ServicesAPI/inventoryreport/data/list')
+        devices = []
+        skip = 0
         
-        try:
-            if not self.token:
-                self.authenticate()
+        while True:
+            payload = {
+                "skip": skip,
+                "limit": batch_size,
+                "sort": {"name": "", "asc": True},
+                "match": {
+                    "type": 1,
+                    "value": "",
+                    "search": device_type
+                },
+                "userNewVersion": True
+            }
+            
+            try:
+                response = self._request('POST', url, json=payload)
                 
-            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/Devices')
-            params = {'sitePath': site_path}
-            
-            response = self.session.get(url, params=params)
-            
-            # Handle token expiration
-            if response.status_code == 401:
-                logging.debug("Token expired, re-authenticating...")
-                self.authenticate()
-                response = self.session.get(url, params=params)
+                if not response.get('data', {}).get('data'):
+                    break
+                    
+                # Parse device data from response
+                batch_data = json.loads(response['data']['data'])
+                devices.extend(self._parse_device_data(batch_data))
                 
-            if response.status_code == 400:
-                logging.warning(f"Site path '{site_path}' not found or invalid. Response: {response.text}")
-                return []
+                if len(batch_data) < batch_size:
+                    break
+                    
+                skip += batch_size
                 
-            response.raise_for_status()
-            
-            devices = response.json().get('devices', [])
-            logging.debug(f"Retrieved {len(devices)} devices from site {site_path}")
-            return devices
-            
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 400:
-                logging.warning(f"Site path '{site_path}' not found or invalid")
-                return []
-            logging.error(f"HTTP error getting devices for site {site_path}: {str(e)}")
-            raise
-        except Exception as e:
-            logging.error(f"Error getting devices for site {site_path}: {str(e)}")
-            raise
-
-    def get_device_attributes(self, hostname: str) -> Dict[str, Any]:
-        """Get device attributes"""
-        url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/Attributes')
-        params = {'hostname': hostname}
+            except Exception as e:
+                logging.error(f"Error retrieving devices of type {device_type}: {str(e)}")
+                break
+                
+        logging.debug(f"Retrieved {len(devices)} devices of type {device_type}")
+        return devices
         
-        try:
-            response = self._request('GET', url, params=params)
-            return response['attributes']
-        except Exception as e:
-            logging.error(f"Error getting attributes for device {hostname}: {str(e)}")
-            raise
+    def _parse_device_data(self, devices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Parse device data from inventory API response into standard format
+        
+        Args:
+            devices: Raw device data from API
+            
+        Returns:
+            List of normalized device dictionaries
+        """
+        parsed_devices = []
+        for device in devices:
+            try:
+                parsed = {
+                    'id': device.get('Device$_id'),
+                    'hostname': device.get('Device$name'),
+                    'mgmtIP': device.get('Device$mgmtIP'),
+                    'site': device.get('Device$site'),
+                    'attributes': {
+                        'vendor': device.get('Device$vendor'),
+                        'model': device.get('Device$model'), 
+                        'subTypeName': device.get('Device$subTypeName'),
+                        'ver': device.get('Device$ver'),
+                        'sn': device.get('Device$sn'),
+                        'contact': device.get('Device$contact'),
+                        'loc': device.get('Device$loc'),
+                        'login_alias': device.get('Device$login_alias'),
+                        'mgmtIntf': device.get('Device$mgmtIntf'),
+                        'lastDiscoveryTime': device.get('Device$lDiscoveryTime')
+                    }
+                }
+                parsed_devices.append(parsed)
+            except Exception as e:
+                logging.error(f"Error parsing device data: {str(e)}")
+                continue
+                
+        return parsed_devices
 
-    def get_device_configs(self, device_id: str) -> Dict[str, Any]:
-        """Get device configuration data"""
+    def get_device_configs(self, device_id: str) -> Dict[str, str]:
+        """
+        Get device configuration data and parse command outputs
+        
+        Args:
+            device_id: NetBrain device ID
+            
+        Returns:
+            Dictionary mapping commands to their outputs
+            
+        Raises:
+            NetBrainAPIError: If API request fails
+            NetBrainError: For other errors during config retrieval
+        """
         configs = {}
         
         try:
@@ -280,7 +251,7 @@ class NetBrainClient:
                     content_url = urljoin(self.host, '/ServicesAPI/DeDeviceData/CliCommand')
                     content_data = {
                         'sourceType': location['sourceType'],
-                        'id': location['id'],
+                        'id': location['id'], 
                         'md5': location['md5'],
                         'location': location['location']
                     }
@@ -296,13 +267,20 @@ class NetBrainClient:
             
         except Exception as e:
             logging.error(f"Error getting configs for device {device_id}: {str(e)}")
-            return {}
+            raise
 
     def get_device_config_time(self, device_id: str) -> Optional[str]:
-        """Get last configuration time for a device"""
+        """
+        Get timestamp of last configuration update
+        
+        Args:
+            device_id: NetBrain device ID
+            
+        Returns:
+            ISO format timestamp string or None if not found
+        """
         logging.debug(f"Getting config time for device ID: {device_id}")
         try:
-            # Get device configs summary
             url = urljoin(self.host, '/ServicesAPI/DeDeviceData/CliCommandSummary')
             data = {
                 'devId': device_id,
@@ -310,17 +288,10 @@ class NetBrainClient:
                 'withData': False
             }
             
-            logging.debug(f"Making API request to {url} with data: {data}")
-            
             response = self._request('POST', url, json=data)
-            
-            logging.debug(f"API response status code: {response.get('operationResult', {}).get('ResultCode')}")
-            logging.debug(f"API response content: {response}")
-            
             summary = response.get('data', {}).get('summary', [])
             
             if summary:
-                # Return the most recent execution time
                 latest_time = summary[0].get('executeTime')
                 logging.debug(f"Latest config time for device {device_id}: {latest_time}")
                 return latest_time
@@ -333,7 +304,21 @@ class NetBrainClient:
             return None
 
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
-        """Make an authenticated request to NetBrain API"""
+        """
+        Make an authenticated request to NetBrain API
+        
+        Args:
+            method: HTTP method
+            endpoint: API endpoint
+            **kwargs: Additional request parameters
+            
+        Returns:
+            JSON response data
+            
+        Raises:
+            NetBrainAPIError: If request fails
+            NetBrainError: For other unexpected errors
+        """
         if not self.token:
             self.authenticate()
 
@@ -351,3 +336,26 @@ class NetBrainClient:
             raise NetBrainAPIError(f"API request failed: {str(e)}")
         except Exception as e:
             raise NetBrainError(f"Unexpected error: {str(e)}")
+
+    def get_device_attributes(self, hostname: str) -> Dict[str, Any]:
+        """
+        Get detailed device attributes
+        
+        Args:
+            hostname: Device hostname
+            
+        Returns:
+            Dictionary of device attributes
+            
+        Raises:
+            NetBrainAPIError: If API request fails
+        """
+        url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/Attributes')
+        params = {'hostname': hostname}
+        
+        try:
+            response = self._request('GET', url, params=params)
+            return response['attributes']
+        except Exception as e:
+            logging.error(f"Error getting attributes for device {hostname}: {str(e)}")
+            raise

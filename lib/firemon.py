@@ -17,21 +17,19 @@ class FireMonAPIError(FireMonError):
     pass
 
 class FireMonClient:
-    """Client for interacting with the FireMon API"""
-    
-    def __init__(self, host: str, username: str, password: str, domain_id: int):
-        """Initialize FireMon client
-        
-        Args:
-            host: FireMon server hostname/URL
-            username: API username
-            password: API password 
-            domain_id: FireMon domain ID
+    def __init__(self, host: str = None, username: str = None,
+                 password: str = None, domain_id: int = None):
         """
-        self.host = host.rstrip('/')
-        self.username = username
-        self.password = password
-        self.domain_id = domain_id
+        Initialize FireMon client with environment variables or provided values
+        """
+        self.host = (host or os.getenv('FIREMON_HOST', '')).rstrip('/')
+        self.username = username or os.getenv('FIREMON_USERNAME', '')
+        self.password = password or os.getenv('FIREMON_PASSWORD', '')
+        self.domain_id = domain_id or int(os.getenv('FIREMON_DOMAIN_ID', '1'))
+        
+        if not all([self.host, self.username, self.password]):
+            raise ValueError("Missing required FireMon credentials")
+            
         self.session = requests.Session()
         self.token = None
 
@@ -121,9 +119,6 @@ class FireMonClient:
             results = response.get('results', [])
             return results[0] if results else None
             
-        except Exception as e:
-            raise FireMonAPIError(f"Error searching for device: {str(e)}")
-
     def create_device(self, device_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new device in FireMon"""
         url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/device')

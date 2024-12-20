@@ -73,7 +73,6 @@ def parse_args():
     parser.add_argument(
         '--log-level',
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-        default='INFO',
         help='Set logging level'
     )
     
@@ -93,33 +92,48 @@ def main():
     # Parse arguments
     args = parse_args()
     
-    # Initialize logging
-    setup_logging(level=args.log_level)
+    # Load environment variables first
+    load_dotenv()
+    
+    # Initialize logging with priority to command line arg
+    log_level = args.log_level or os.getenv('LOG_LEVEL', 'INFO')
+    setup_logging(level=log_level)
     logging.info("Starting NetBrain to FireMon Sync Service")
 
     try:
-        # Load environment variables
-        load_dotenv()
-        
-        # Initialize configuration
+        # Initialize configuration with environment variables
         config_manager = ConfigManager()
         
-        # Override config with command line arguments
-        if args.dry_run:
-            config_manager.sync_config.dry_run = True
+        # Handle sync mode settings (command line takes precedence)
         if args.sync_groups:
             config_manager.sync_config.sync_mode = 'groups'
+            config_manager.sync_config.enable_group_sync = True
+            config_manager.sync_config.enable_config_sync = False
+            config_manager.sync_config.enable_license_sync = False
         elif args.sync_licenses:
             config_manager.sync_config.sync_mode = 'licenses'
+            config_manager.sync_config.enable_group_sync = False
+            config_manager.sync_config.enable_config_sync = False
+            config_manager.sync_config.enable_license_sync = True
         elif args.sync_configs:
             config_manager.sync_config.sync_mode = 'configs'
+            config_manager.sync_config.enable_group_sync = False
+            config_manager.sync_config.enable_config_sync = True
+            config_manager.sync_config.enable_license_sync = False
+            
+        # Handle dry run setting (command line takes precedence)
+        if args.dry_run:
+            config_manager.sync_config.dry_run = True
+        elif os.getenv('DRY_RUN', '').lower() == 'true':
+            config_manager.sync_config.dry_run = True
 
         # Initialize clients
         netbrain_client = NetBrainClient(
             host=os.getenv('NETBRAIN_HOST'),
             username=os.getenv('NETBRAIN_USERNAME'),
             password=os.getenv('NETBRAIN_PASSWORD'),
-            tenant=os.getenv('NETBRAIN_TENANT')
+            tenant=os.getenv('NETBRAIN_TENANT'),
+            config_manager=config_manager
         )
 
         firemon_client = FireMonClient(
@@ -181,7 +195,7 @@ def main():
         initial_report = run_sync_cycle()
         
         # If continuous mode, start sync interval
-        if args.continuous and not args.dry_run:
+        if args.continuous and not config_manager.sync_config.dry_run:
             sync_interval = int(os.getenv('SYNC_INTERVAL_MINUTES', 60))
             logging.info(f"Starting sync interval every {sync_interval} minutes")
             

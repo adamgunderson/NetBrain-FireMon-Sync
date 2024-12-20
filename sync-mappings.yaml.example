@@ -1,67 +1,160 @@
 # File: sync-mappings.yaml
 # Configuration mappings for NetBrain to FireMon sync
 
-# Maps top-level NetBrain sites to FireMon collector groups
+# FireMon collector group mappings based on geographic region
 collector_mapping:
-  NA: "1716af41-caf5-40c6-a81b-84202fc640aa"
-  EU: "2826b52-d7b6-5bf7-bc2b-95313f751bb"
-  APAC: "3936c63-e8c7-6cg8-cd3c-06424g862cc"
+  NA: "1716af41-caf5-40c6-a81b-84202fc640aa"  # North America collector
+  EU: "2826b52-d7b6-5bf7-bc2b-95313f751bb"    # Europe collector
+  APAC: "3936c63-e8c7-6cg8-cd3c-a6424g862cc"  # Asia-Pacific collector
 
-# Maps NetBrain device types (subTypeName) to FireMon device packs
+# Device mappings - maps NetBrain device types to FireMon device packs
 device_pack_mapping:
-  "Cisco IOS Switch":
-    device_pack_id: 25
-    artifact_id: "cisco_ios"
-    group_id: "com.fm.sm.dp.cisco-ios"
+  "Juniper EX Switch":
+    artifact_id: "juniper_ex"
+    group_id: "com.fm.sm.dp.juniper_ex"
     device_type: "ROUTER_SWITCH"
-    device_name: "IOS"
-  
+    device_name: "EX Series Ethernet Switch"
+
+  "Juniper Router":
+    artifact_id: "juniper_mseries"
+    group_id: "com.fm.sm.dp.juniper_mseries"
+    device_type: "ROUTER_SWITCH"
+    device_name: "M Series"
+
+  "Juniper QFX Ethernet Switch":
+    artifact_id: "juniper_ex"
+    group_id: "com.fm.sm.dp.juniper_ex"
+    device_type: "ROUTER_SWITCH"
+    device_name: "QFX Series"
+
   "Juniper SRX Firewall":
-    device_pack_id: 57
     artifact_id: "juniper_srx"
     group_id: "com.fm.sm.dp.juniper_srx"
     device_type: "FIREWALL"
     device_name: "SRX"
 
-# Maps NetBrain CLI commands to FireMon configuration file names
+  "Palo Alto Firewall":
+    artifact_id: "palo_alto_firewall"
+    group_id: "com.fm.sm.dp.paloalto"
+    device_type: "FIREWALL"
+    device_name: "Firewall"
+
+  "Palo Alto Panorama":
+    artifact_id: "palo_alto_panorama"
+    group_id: "com.fm.sm.dp.paloalto_panorama"
+    device_type: "DEVICE_MGR"
+    device_name: "Panorama"
+
+  "Aruba Switch":
+    artifact_id: "cisco_ios"  # Uses IOS-style parsing
+    group_id: "com.fm.sm.dp.cisco-ios"
+    device_type: "ROUTER_SWITCH"
+    device_name: "IOS"
+
+  "Cisco Meraki Switch":
+    artifact_id: "cisco_meraki_network"
+    group_id: "com.fm.sm.dp.cisco-meraki-network"
+    device_type: "FIREWALL"
+    device_name: "Meraki Network"
+
+  "Arista Switch":
+    artifact_id: "cisco_ios"  # Uses IOS-style parsing
+    group_id: "com.fm.sm.dp.cisco-ios"
+    device_type: "ROUTER_SWITCH"
+    device_name: "IOS"
+
+  "Cisco IOS Switch":
+    artifact_id: "cisco_ios"
+    group_id: "com.fm.sm.dp.cisco-ios"
+    device_type: "ROUTER_SWITCH"
+    device_name: "IOS"
+
+# Configuration file mappings - maps NetBrain commands to FireMon config files
 config_file_mapping:
+  "Juniper EX Switch":
+    "show configuration | no-more": "config_xml"
+    "show interfaces": "interfaces_xml"
+    "show version": "version_xml"
+    "show route": "route_xml"
+
+  "Juniper Router":
+    "show configuration | no-more": "config_xml"
+    "show interfaces": "interfaces_xml"
+    "show version": "version_xml"
+    "show route": "route_xml"
+
+  "Juniper QFX Ethernet Switch":
+    "show configuration | no-more": "config_xml"
+    "show interfaces": "interfaces_xml"
+    "show version": "version_xml"
+    "show route": "route_xml"
+
+  "Juniper SRX Firewall":
+    "show configuration | no-more": "config_xml"
+    "show interfaces": "interfaces_xml"
+    "show version": "version_xml"
+    "show security zones": "zones_xml"
+    "show route": "route_xml"
+    "show security policies hit-count": "policy_hits_xml"
+
+  "Palo Alto Firewall":
+    "show config running": "config_xml"
+    "show interface all": "interfaces_xml"
+    "show system info": "version_xml"
+    "show routing route": "route_xml"
+    "show zone": "zones_xml"
+    "show running security-policy hit-count": "policy_hits_xml"
+
+  "Palo Alto Panorama":
+    "show config running": "config_xml"
+    "show system info": "version_xml"
+    "show devices all": "managed_devices_xml"
+
+  "Aruba Switch":
+    "show running-config": "config_xml"
+    "show interfaces": "interfaces_xml"
+    "show version": "version_xml"
+    "show ip route": "route_xml"
+
+  "Cisco Meraki Switch":
+    "show running-config": "config_xml"
+    "show interfaces": "interfaces_xml"
+    "show version": "version_xml"
+
+  "Arista Switch":
+    "show running-config": "config_xml"
+    "show interfaces": "interfaces_xml"
+    "show version": "version_xml"
+    "show ip route": "route_xml"
+
   "Cisco IOS Switch":
     "show running-config": "config_xml"
-    "show version": "version_xml"
     "show interfaces": "interfaces_xml"
+    "show version": "version_xml"
     "show ip route": "route_xml"
-  
-  "Juniper SRX Firewall":
-    "show configuration": "config_xml"
-    "show interfaces": "interfaces_xml"
-    "show version": "version_xml"
-    "show route":
-      BGP: "route_bgp"
-      OSPF: "route_ospf"
-      Static: "route_static"
-      Direct: "route_direct"
-      Local: "route_local"
+    "show vlan": "vlan_xml"
 
-# Default FireMon settings for device creation
+# Default device settings
 default_settings:
-  retrieval_method: "FromDevice"
-  retrieval_timeout: 120
-  server_alive_interval: 30
-  suppress_fqdn_capabilities: false
-  use_cli_command_generation: false
-  use_private_config: false
-  log_monitoring_enabled: false
-  change_monitoring_enabled: false
-  scheduled_retrieval_enabled: false
-  check_for_change_enabled: false
-  skip_route: false
-  encoding: ""
-  batch_config_retrieval: false
-  deprecated_ca: false
-  retrieve_set_syntax_config: false
-  skip_application_file: false
-  reset_ssh_key_value: false
-  routes_from_config: false
-  authentication_method: "UserPassword"
-  fallback_authentication: false
-  check_for_change_on_detection: false
+  retrievalMethod: "FromDevice"
+  suppressFQDNCapabilities: false
+  useCLICommandGeneration: false
+  logMonitoringEnabled: true
+  changeMonitoringEnabled: true
+  scheduledRetrievalEnabled: false
+  checkForChangeEnabled: false
+  port: 22
+  encoding: "utf-8"
+  serverAliveInterval: 30
+  retrievalCallTimeOut: 120
+
+# Validation rules
+validation_rules:
+  allowed_config_age_hours: 24
+  required_config_files:
+    - "config_xml"
+    - "interfaces_xml"
+  warning_thresholds:
+    max_devices_per_group: 1000
+    max_config_size_mb: 10
+    min_free_disk_space_gb: 5

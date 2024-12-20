@@ -277,7 +277,7 @@ class SyncManager:
         """Create new device in FireMon"""
         try:
             device_type = device['attributes']['subTypeName']
-            device_pack = self.config_mapping.get_device_type_mapping(device_type)
+            device_pack = self.config_manager.get_device_pack(device_type)
             
             if not device_pack:
                 logging.warning(f"No device pack mapping found for type: {device_type}")
@@ -288,22 +288,31 @@ class SyncManager:
                 logging.warning(f"No collector group found for site: {device['site']}")
                 return None
 
+            # Get default settings
+            default_settings = self.config_manager.get_default_settings()
+            
+            # Override username if available in device attributes
+            if device['attributes'].get('login_alias'):
+                default_settings['username'] = device['attributes']['login_alias']
+
             device_data = {
                 'name': device['hostname'],
                 'managementIp': device['mgmtIP'],
                 'description': f"{device['attributes'].get('vendor', '')} {device['attributes'].get('model', '')}",
-                'devicePack': device_pack,
+                'devicePack': {
+                    'artifactId': device_pack['artifact_id'],
+                    'groupId': device_pack['group_id'],
+                    'deviceType': device_pack['device_type'],
+                    'deviceName': device_pack['device_name']
+                },
                 'collectorGroupId': collector_id,
                 'domainId': self.firemon.domain_id,
-                'extendedSettingsJson': {
-                    **self.config_manager.get_default_settings(),
-                    'username': device['attributes'].get('login_alias', 'admin'),
-                }
+                'extendedSettingsJson': default_settings
             }
 
             new_device = self.firemon.create_device(device_data)
             
-            # Get and import initial configurations
+            # Process initial configuration and licensing
             configs = self.netbrain.get_device_configs(device['id'])
             if configs:
                 mapped_configs = self.config_handler.process_device_configs(device, configs)
