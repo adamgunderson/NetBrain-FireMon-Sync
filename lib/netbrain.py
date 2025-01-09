@@ -2,17 +2,24 @@
 
 """
 NetBrain API Client
-Handles all interactions with the NetBrain API including authentication, device inventory retrieval,
-and configuration management
+Handles all interactions with the NetBrain API including:
+- Authentication and token management 
+- Device inventory retrieval
+- Configuration management
+- Site hierarchy management
+- Error handling and request retries
 """
 
+import os
 import logging
 import requests
 import json
 from typing import Dict, List, Any, Optional, Set
-from urllib.parse import urljoin, quote
+from urllib.parse import urljoin
 from functools import lru_cache
-from datetime import datetime
+from datetime import datetime, timedelta
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 
 class NetBrainError(Exception):
     """Base exception for NetBrain API errors"""
@@ -32,6 +39,13 @@ class NetBrainClient:
                  config_manager = None):
         """
         Initialize NetBrain client with environment variables or provided values
+        
+        Args:
+            host: NetBrain server URL
+            username: NetBrain username
+            password: NetBrain password 
+            tenant: NetBrain tenant name (defaults to 'Default')
+            config_manager: Configuration manager instance
         """
         self.host = (host or os.getenv('NETBRAIN_HOST', '')).rstrip('/')
         self.username = username or os.getenv('NETBRAIN_USERNAME', '')
@@ -41,13 +55,27 @@ class NetBrainClient:
         if not all([self.host, self.username, self.password]):
             raise ValueError("Missing required NetBrain credentials")
             
+        # Setup session with retry strategy
         self.session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[401, 429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+        
         self.token = None
         self.config_manager = config_manager
+        self.last_auth_time = None
+        self.token_expiry = 30  # Token expiry in minutes
 
     def authenticate(self) -> None:
         """
         Authenticate with NetBrain and get token
+        
         Raises:
             NetBrainAuthError: If authentication fails
             NetBrainError: For other errors during authentication
@@ -55,15 +83,30 @@ class NetBrainClient:
         url = urljoin(self.host, '/ServicesAPI/API/V1/Session')
         data = {
             'username': self.username,
-            'password': self.password
+            'password': self.password,
+            'tenant': self.tenant
         }
         
         try:
+            logging.debug("Attempting NetBrain authentication...")
             response = self.session.post(url, json=data)
             response.raise_for_status()
             
-            self.token = response.json()['token']
-            self.session.headers.update({'token': self.token})
+            auth_data = response.json()
+            if not auth_data.get('token'):
+                raise NetBrainAuthError("No token in authentication response")
+                
+            self.token = auth_data['token']
+            self.last_auth_time = datetime.now()
+            
+            # Update session headers with new token
+            self.session.headers.update({
+                'token': self.token,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Tenant': self.tenant
+            })
+            
             logging.info("Successfully authenticated with NetBrain")
             
         except requests.exceptions.HTTPError as e:
@@ -73,23 +116,34 @@ class NetBrainClient:
 
     def validate_token(self) -> bool:
         """
-        Check if current token is valid
+        Check if current token is valid and not expired
+        
         Returns:
             bool: True if token is valid, False otherwise
         """
-        if not self.token:
+        if not self.token or not self.last_auth_time:
+            return False
+            
+        # Check token age
+        token_age = datetime.now() - self.last_auth_time
+        if token_age > timedelta(minutes=self.token_expiry):
+            logging.debug("Token expired due to age")
             return False
             
         try:
-            url = urljoin(self.host, '/ServicesAPI/inventoryreport/data/list')
-            payload = {
-                "skip": 0,
-                "limit": 1
-            }
-            response = self.session.post(url, json=payload)
-            return response.status_code != 401
+            url = urljoin(self.host, '/ServicesAPI/API/V1/Session/CurrentDomain')
+            response = self.session.get(url)
             
-        except:
+            if response.status_code == 200:
+                return True
+            elif response.status_code == 401:
+                logging.debug("Token invalid according to API check")
+                return False
+                
+            return False
+            
+        except Exception as e:
+            logging.error(f"Error validating token: {str(e)}")
             return False
 
     def get_all_devices(self) -> List[Dict[str, Any]]:
@@ -155,12 +209,15 @@ class NetBrainClient:
             }
             
             try:
+                # Ensure valid token before request
+                if not self.validate_token():
+                    self.authenticate()
+                    
                 response = self._request('POST', url, json=payload)
                 
                 if not response.get('data', {}).get('data'):
                     break
                     
-                # Parse device data from response
                 batch_data = json.loads(response['data']['data'])
                 devices.extend(self._parse_device_data(batch_data))
                 
@@ -175,7 +232,7 @@ class NetBrainClient:
                 
         logging.debug(f"Retrieved {len(devices)} devices of type {device_type}")
         return devices
-        
+
     def _parse_device_data(self, devices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Parse device data from inventory API response into standard format
@@ -231,6 +288,10 @@ class NetBrainClient:
         configs = {}
         
         try:
+            # Ensure valid token
+            if not self.validate_token():
+                self.authenticate()
+                
             # First get available configs
             url = urljoin(self.host, '/ServicesAPI/DeDeviceData/CliCommandSummary')
             data = {
@@ -281,6 +342,9 @@ class NetBrainClient:
         """
         logging.debug(f"Getting config time for device ID: {device_id}")
         try:
+            if not self.validate_token():
+                self.authenticate()
+                
             url = urljoin(self.host, '/ServicesAPI/DeDeviceData/CliCommandSummary')
             data = {
                 'devId': device_id,
@@ -305,7 +369,7 @@ class NetBrainClient:
 
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """
-        Make an authenticated request to NetBrain API
+        Make an authenticated request to NetBrain API with automatic token refresh
         
         Args:
             method: HTTP method
@@ -325,7 +389,9 @@ class NetBrainClient:
         try:
             response = self.session.request(method, endpoint, **kwargs)
             
-            if response.status_code == 401:  # Token expired
+            # Handle 401 by re-authenticating once
+            if response.status_code == 401:
+                logging.debug("Token expired during request, re-authenticating...")
                 self.authenticate()
                 response = self.session.request(method, endpoint, **kwargs)
             
@@ -333,9 +399,30 @@ class NetBrainClient:
             return response.json()
             
         except requests.exceptions.HTTPError as e:
-            raise NetBrainAPIError(f"API request failed: {str(e)}")
+            raise NetBrainAPIError(f"API request failed: {e.response.status_code} {e.response.reason} for url: {e.response.url}")
         except Exception as e:
             raise NetBrainError(f"Unexpected error: {str(e)}")
+
+    def get_sites(self) -> List[Dict[str, Any]]:
+        """
+        Get all sites from NetBrain
+        
+        Returns:
+            List of site dictionaries
+            
+        Raises:
+            NetBrainAPIError: If API request fails
+        """
+        try:
+            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Sites/ChildSites')
+            params = {'sitePath': 'My Network'}
+            
+            response = self._request('GET', url, params=params)
+            return response.get('sites', [])
+            
+        except Exception as e:
+            logging.error(f"Error getting sites: {str(e)}")
+            raise
 
     def get_device_attributes(self, hostname: str) -> Dict[str, Any]:
         """
