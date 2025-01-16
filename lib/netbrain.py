@@ -254,24 +254,29 @@ class NetBrainClient:
         for device in devices:
             try:
                 parsed = {
-                    'id': device.get('Device$_id'),
-                    'hostname': device.get('Device$name'),
-                    'mgmtIP': device.get('Device$mgmtIP'),
-                    'site': device.get('Device$site'),
+                    'id': device.get('id'),
+                    'hostname': device.get('name'),
+                    'mgmtIP': device.get('mgmtIP'),
+                    'site': device.get('site'),
                     'attributes': {
-                        'vendor': device.get('Device$vendor'),
-                        'model': device.get('Device$model'), 
-                        'subTypeName': device.get('Device$subTypeName'),
-                        'ver': device.get('Device$ver'),
-                        'sn': device.get('Device$sn'),
-                        'contact': device.get('Device$contact'),
-                        'loc': device.get('Device$loc'),
-                        'login_alias': device.get('Device$login_alias'),
-                        'mgmtIntf': device.get('Device$mgmtIntf'),
-                        'lastDiscoveryTime': device.get('Device$lDiscoveryTime')
+                        'vendor': device.get('vendor'),
+                        'model': device.get('model'), 
+                        'subTypeName': device.get('subTypeName'),
+                        'version': device.get('ver'),
+                        'serialNumber': device.get('sn'),
+                        'contact': device.get('contact'),
+                        'location': device.get('loc'),
+                        'login_alias': device.get('login_alias'),
+                        'mgmtIntf': device.get('mgmtIntf'),
+                        'lastDiscoveryTime': device.get('lDiscoveryTime')
                     }
                 }
-                parsed_devices.append(parsed)
+                
+                if any(parsed.values()) or any(parsed['attributes'].values()):  # Only add if we have some data
+                    parsed_devices.append(parsed)
+                else:
+                    logging.warning(f"Skipping device with no valid data: {device}")
+                    
             except Exception as e:
                 logging.error(f"Error parsing device data: {str(e)}")
                 continue

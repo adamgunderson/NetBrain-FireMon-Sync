@@ -115,13 +115,22 @@ def log_device_details(devices: list) -> None:
     if debug_logger.handlers:
         debug_logger.debug("\n=== Device Details ===")
         for device in devices:
+            attrs = device.get('attributes', {})
             debug_logger.debug(
                 f"Device: {device.get('hostname', 'N/A')}\n"
+                f"  ID: {device.get('id', 'N/A')}\n"
                 f"  Management IP: {device.get('mgmtIP', 'N/A')}\n"
                 f"  Site: {device.get('site', 'N/A')}\n"
-                f"  Type: {device.get('attributes', {}).get('subTypeName', 'N/A')}\n"
-                f"  Model: {device.get('attributes', {}).get('model', 'N/A')}\n"
-                f"  Vendor: {device.get('attributes', {}).get('vendor', 'N/A')}\n"
+                f"  Management Interface: {attrs.get('mgmtIntf', 'N/A')}\n"
+                f"  Type: {attrs.get('subTypeName', 'N/A')}\n"
+                f"  Model: {attrs.get('model', 'N/A')}\n"
+                f"  Vendor: {attrs.get('vendor', 'N/A')}\n"
+                f"  Version: {attrs.get('version', 'N/A')}\n"
+                f"  Serial Number: {attrs.get('serialNumber', 'N/A')}\n"
+                f"  Location: {attrs.get('location', 'N/A')}\n"
+                f"  Contact: {attrs.get('contact', 'N/A')}\n"
+                f"  Login Alias: {attrs.get('login_alias', 'N/A')}\n"
+                f"  Last Discovery: {attrs.get('lastDiscoveryTime', 'N/A')}\n"
                 "  " + "="*40
             )
 
