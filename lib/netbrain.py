@@ -176,61 +176,63 @@ class NetBrainClient:
         logging.info(f"Retrieved {len(all_devices)} total devices from NetBrain")
         return all_devices
 
-    def _get_devices_by_type(self, device_type: str, 
-                           batch_size: int = 500) -> List[Dict[str, Any]]:
+    def _get_devices_by_type(self, device_type: str, batch_size: int = 500) -> List[Dict[str, Any]]:
         """
-        Get devices of a specific type using the Inventory List API
+        Get devices of a specific type using the CMDB API
         
         Args:
             device_type: Device type to search for
             batch_size: Number of records to retrieve per request
-            
+                
         Returns:
             List of device dictionaries
-            
+                
         Raises:
             NetBrainAPIError: If API request fails
         """
-        url = urljoin(self.host, '/ServicesAPI/inventoryreport/data/list')
+        url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices')
         devices = []
         skip = 0
         
+        # Create filter for device type
+        device_filter = {
+            'subTypeName': device_type
+        }
+        
         while True:
-            payload = {
-                "skip": skip,
-                "limit": batch_size,
-                "sort": {"name": "", "asc": True},
-                "match": {
-                    "type": 1,
-                    "value": "",
-                    "search": device_type
-                },
-                "userNewVersion": True
-            }
-            
             try:
-                # Ensure valid token before request
-                if not self.validate_token():
-                    self.authenticate()
-                    
-                response = self._request('POST', url, json=payload)
+                # Build query parameters
+                params = {
+                    'version': '1',
+                    'limit': batch_size,
+                    'skip': skip,
+                    'fullattr': '0',
+                    'filter': json.dumps(device_filter)
+                }
                 
-                if not response.get('data', {}).get('data'):
+                response = self._request('GET', url, params=params)
+                
+                if not response.get('devices'):
                     break
                     
-                batch_data = json.loads(response['data']['data'])
+                # Process device batch
+                batch_data = response['devices']
                 devices.extend(self._parse_device_data(batch_data))
                 
-                if len(batch_data) < batch_size:
+                # Check if we've retrieved all devices
+                total_count = response.get('totalResultCount', 0)
+                if skip + len(batch_data) >= total_count:
                     break
                     
                 skip += batch_size
+                
+                logging.debug(f"Retrieved {len(devices)}/{total_count} devices of type {device_type}")
                 
             except Exception as e:
                 logging.error(f"Error retrieving devices of type {device_type}: {str(e)}")
                 break
                 
-        logging.debug(f"Retrieved {len(devices)} devices of type {device_type}")
+        logging.debug(f"Retrieved total of {len(devices)} devices of type {device_type}")
         return devices
 
     def _parse_device_data(self, devices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
