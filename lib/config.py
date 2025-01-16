@@ -14,15 +14,16 @@ from typing import Dict, List, Any, Optional, Set
 class SyncConfig:
     """Configuration dataclass for sync settings"""
     dry_run: bool
-    sync_mode: str  # 'full', 'groups', 'licenses', 'configs'
+    sync_mode: str  # 'full', 'groups', 'licenses', 'configs', 'devices'
     sync_interval_minutes: int
-    continuous_sync: bool  # New flag for one-time vs continuous sync
+    continuous_sync: bool
+    remove_missing_devices: bool  # New flag to control device removal
     
     @classmethod
     def from_env(cls):
         """Create SyncConfig from environment variables"""
         sync_mode = os.getenv('SYNC_MODE', 'full').lower()
-        if sync_mode not in ['full', 'groups', 'licenses', 'configs']:
+        if sync_mode not in ['full', 'groups', 'licenses', 'configs', 'devices']:
             logging.warning(f"Invalid SYNC_MODE '{sync_mode}', defaulting to 'full'")
             sync_mode = 'full'
             
@@ -30,7 +31,8 @@ class SyncConfig:
             dry_run=os.getenv('DRY_RUN', 'false').lower() == 'true',
             sync_mode=sync_mode,
             sync_interval_minutes=int(os.getenv('SYNC_INTERVAL_MINUTES', '60')),
-            continuous_sync=os.getenv('CONTINUOUS_SYNC', 'false').lower() == 'true'
+            continuous_sync=os.getenv('CONTINUOUS_SYNC', 'false').lower() == 'true',
+            remove_missing_devices=os.getenv('REMOVE_MISSING_DEVICES', 'false').lower() == 'true'
         )
     
     @property
@@ -47,6 +49,11 @@ class SyncConfig:
     def enable_group_sync(self) -> bool:
         """Determine if group sync is enabled based on sync mode"""
         return self.sync_mode in ['full', 'groups']
+    
+    @property
+    def enable_device_sync(self) -> bool:
+        """Determine if device sync is enabled based on sync mode"""
+        return self.sync_mode in ['full', 'devices']
 
 class ConfigManager:
     def __init__(self, config_path: str = None):

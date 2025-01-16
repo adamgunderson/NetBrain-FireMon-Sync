@@ -46,24 +46,23 @@ class SyncManager:
 
                 # Ensure valid authentication
                 if not self.netbrain.validate_token():
-                    logging.debug("NetBrain token invalid, authenticating...")
                     self.netbrain.authenticate()
-                    
                 if not self.firemon.validate_token():
-                    logging.debug("FireMon token invalid, authenticating...")
                     self.firemon.authenticate()
 
                 # Initial validation
                 initial_validation = self.validator.run_all_validations() if self.validator else {}
 
-                # Perform sync operations based on mode
-                if self.config_manager.sync_config.sync_mode in ['full', 'groups']:
+                # Perform device sync if enabled
+                if self.config_manager.sync_config.enable_device_sync:
+                    self._sync_devices()
+
+                # Perform other syncs based on mode
+                if self.config_manager.sync_config.enable_group_sync:
                     self._sync_device_groups()
-
-                if self.config_manager.sync_config.sync_mode in ['full', 'configs']:
+                if self.config_manager.sync_config.enable_config_sync:
                     self._sync_configurations()
-
-                if self.config_manager.sync_config.sync_mode in ['full', 'licenses']:
+                if self.config_manager.sync_config.enable_license_sync:
                     self._sync_licenses()
 
                 # Final validation
@@ -80,6 +79,96 @@ class SyncManager:
 
         except Exception as e:
             logging.error(f"Error during sync: {str(e)}")
+            raise
+
+    def _sync_devices(self) -> None:
+        """Synchronize devices between NetBrain and FireMon"""
+        try:
+            logging.info("Starting device synchronization")
+            
+            # Get devices from both systems
+            nb_devices = self.netbrain.get_all_devices()
+            fm_devices = self.firemon.get_all_devices()
+            
+            # Create mappings for easier lookup
+            nb_device_map = {d['hostname']: d for d in nb_devices}
+            fm_device_map = {d['name']: d for d in fm_devices}
+            
+            # Find devices to add (in NetBrain but not in FireMon)
+            devices_to_add = set(nb_device_map.keys()) - set(fm_device_map.keys())
+            
+            # Find devices to remove (in FireMon but not in NetBrain)
+            devices_to_remove = set(fm_device_map.keys()) - set(nb_device_map.keys())
+            
+            # Process devices to add
+            for hostname in devices_to_add:
+                device = nb_device_map[hostname]
+                if not self.config_manager.sync_config.dry_run:
+                    try:
+                        new_device = self._create_device_in_firemon(device)
+                        if new_device:
+                            self.changes['devices'].append({
+                                'device': hostname,
+                                'action': 'add',
+                                'status': 'success'
+                            })
+                    except Exception as e:
+                        logging.error(f"Error creating device {hostname}: {str(e)}")
+                        self.changes['devices'].append({
+                            'device': hostname,
+                            'action': 'add',
+                            'status': 'error',
+                            'error': str(e)
+                        })
+                else:
+                    # In dry run mode, just record what would be added
+                    self.changes['devices'].append({
+                        'device': hostname,
+                        'action': 'add',
+                        'status': 'dry_run',
+                        'details': {
+                            'mgmt_ip': device['mgmtIP'],
+                            'site': device.get('site'),
+                            'type': device['attributes'].get('subTypeName')
+                        }
+                    })
+            
+            # Process devices to remove if enabled
+            if self.config_manager.sync_config.remove_missing_devices:
+                for hostname in devices_to_remove:
+                    device = fm_device_map[hostname]
+                    if not self.config_manager.sync_config.dry_run:
+                        try:
+                            self.firemon.delete_device(device['id'])
+                            self.changes['devices'].append({
+                                'device': hostname,
+                                'action': 'remove',
+                                'status': 'success'
+                            })
+                        except Exception as e:
+                            logging.error(f"Error removing device {hostname}: {str(e)}")
+                            self.changes['devices'].append({
+                                'device': hostname,
+                                'action': 'remove',
+                                'status': 'error',
+                                'error': str(e)
+                            })
+                    else:
+                        # In dry run mode, just record what would be removed
+                        self.changes['devices'].append({
+                            'device': hostname,
+                            'action': 'remove',
+                            'status': 'dry_run',
+                            'details': {
+                                'id': device['id'],
+                                'mgmt_ip': device.get('managementIp')
+                            }
+                        })
+            
+            logging.info(f"Device sync summary - To Add: {len(devices_to_add)}, To Remove: {len(devices_to_remove)}")
+            
+        except Exception as e:
+            logging.error(f"Error syncing devices: {str(e)}")
             raise
 
     def _sync_device_groups(self) -> None:
