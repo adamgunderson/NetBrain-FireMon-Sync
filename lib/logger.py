@@ -1,11 +1,24 @@
 # lib/logger.py
 
+"""
+Logging configuration module
+Handles setup of application logging with support for:
+- Console output
+- Main log file with rotation
+- Separate debug log file for device/group details
+- Multiple log levels
+- Enhanced debug formatting
+"""
+
 import os
 import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from typing import Optional
 from pathlib import Path
+
+# Create a custom logger for device and group debug info
+debug_logger = logging.getLogger('debug_details')
 
 def setup_logging(level: Optional[str] = None) -> None:
     """
@@ -68,7 +81,64 @@ def setup_logging(level: Optional[str] = None) -> None:
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
     
+    # Setup debug details logger if in DEBUG mode
+    if level == 'DEBUG':
+        debug_log_path = Path(log_dir) / 'debug_details.log'
+        debug_formatter = logging.Formatter(
+            '%(asctime)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        
+        debug_handler = RotatingFileHandler(
+            debug_log_path,
+            maxBytes=max_bytes,
+            backupCount=backup_count
+        )
+        debug_handler.setFormatter(debug_formatter)
+        debug_logger.addHandler(debug_handler)
+        debug_logger.setLevel(logging.DEBUG)
+        
+        logging.info(f"Debug details logging enabled to {debug_log_path}")
+    
     # Initial log messages
     logging.info(f"Logging initialized at {level} level")
     if level == 'DEBUG':
         logging.debug("Debug logging enabled with enhanced formatting")
+
+def log_device_details(devices: list) -> None:
+    """
+    Log detailed device information to debug log
+    
+    Args:
+        devices: List of device dictionaries
+    """
+    if debug_logger.handlers:
+        debug_logger.debug("\n=== Device Details ===")
+        for device in devices:
+            debug_logger.debug(
+                f"Device: {device.get('hostname', 'N/A')}\n"
+                f"  Management IP: {device.get('mgmtIP', 'N/A')}\n"
+                f"  Site: {device.get('site', 'N/A')}\n"
+                f"  Type: {device.get('attributes', {}).get('subTypeName', 'N/A')}\n"
+                f"  Model: {device.get('attributes', {}).get('model', 'N/A')}\n"
+                f"  Vendor: {device.get('attributes', {}).get('vendor', 'N/A')}\n"
+                "  " + "="*40
+            )
+
+def log_group_details(groups: list) -> None:
+    """
+    Log detailed group information to debug log
+    
+    Args:
+        groups: List of group dictionaries
+    """
+    if debug_logger.handlers:
+        debug_logger.debug("\n=== Group Details ===")
+        for group in groups:
+            debug_logger.debug(
+                f"Group: {group.get('name', 'N/A')}\n"
+                f"  ID: {group.get('id', 'N/A')}\n"
+                f"  Parent ID: {group.get('parentId', 'N/A')}\n"
+                f"  Description: {group.get('description', 'N/A')}\n"
+                "  " + "="*40
+            )

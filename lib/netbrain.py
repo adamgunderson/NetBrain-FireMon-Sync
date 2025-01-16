@@ -172,8 +172,14 @@ class NetBrainClient:
             except Exception as e:
                 logging.error(f"Error getting devices for type {device_type}: {str(e)}")
                 continue
-                
-        logging.info(f"Retrieved {len(all_devices)} total devices from NetBrain")
+        
+        total_devices = len(all_devices)        
+        logging.info(f"Retrieved {total_devices} total devices from NetBrain")
+        
+        # Add detailed device logging if in debug mode
+        from .logger import log_device_details
+        log_device_details(all_devices)
+        
         return all_devices
 
     def _get_devices_by_type(self, device_type: str, batch_size: int = 100) -> List[Dict[str, Any]]:
@@ -199,6 +205,9 @@ class NetBrainClient:
             'subTypeName': device_type
         }
         
+        # Keep track of total devices
+        total_count = None
+        
         while True:
             try:
                 # Build query parameters
@@ -206,33 +215,46 @@ class NetBrainClient:
                     'version': '1',
                     'limit': batch_size,
                     'skip': skip,
-                    'fullattr': '0',
+                    'fullattr': '1',
                     'filter': json.dumps(device_filter)
                 }
                 
                 response = self._request('GET', url, params=params)
                 
-                if not response.get('devices'):
-                    break
+                # Get total count from response
+                if total_count is None:
+                    total_count = response.get('totalResultCount', 0)
+                    logging.debug(f"Found {total_count} total devices of type {device_type}")
                     
-                # Process device batch
-                batch_data = response['devices']
-                devices.extend(self._parse_device_data(batch_data))
+                    if total_count == 0:
+                        break
                 
-                # Check if we've retrieved all devices
-                total_count = response.get('totalResultCount', 0)
-                if skip + len(batch_data) >= total_count:
+                # Process device batch
+                batch_data = response.get('devices', [])
+                if not batch_data:
                     break
                     
-                skip += batch_size
+                devices.extend(self._parse_device_data(batch_data))
                 
                 logging.debug(f"Retrieved {len(devices)}/{total_count} devices of type {device_type}")
                 
+                # Check if we've retrieved all devices
+                if len(devices) >= total_count:
+                    break
+                    
+                # Increment skip for next batch
+                skip += len(batch_data)
+                
             except Exception as e:
-                logging.error(f"Error retrieving devices of type {device_type}: {str(e)}")
+                logging.error(f"Error retrieving devices of type {device_type} (skip={skip}): {str(e)}")
                 break
                 
-        logging.debug(f"Retrieved total of {len(devices)} devices of type {device_type}")
+        logging.info(f"Retrieved total of {len(devices)}/{total_count} devices of type {device_type}")
+        
+        # Verify we got all expected devices
+        if total_count and len(devices) < total_count:
+            logging.warning(f"Only retrieved {len(devices)} of {total_count} expected devices of type {device_type}")
+            
         return devices
 
     def _parse_device_data(self, devices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
