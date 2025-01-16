@@ -1,39 +1,52 @@
 # lib/config.py
-
 """
 Configuration management for the NetBrain to FireMon sync service
-Handles loading and validation of configuration from file and environment variables
+Handles loading and validation of configuration from environment variables
 """
 
+from dataclasses import dataclass
 import os
 import yaml
 import logging
 from typing import Dict, List, Any, Optional, Set
-from dataclasses import dataclass
 
 @dataclass
 class SyncConfig:
     """Configuration dataclass for sync settings"""
     dry_run: bool
-    sync_mode: str
-    enable_config_sync: bool
-    enable_license_sync: bool 
-    enable_group_sync: bool
-    unlicense_removed_devices: bool
+    sync_mode: str  # 'full', 'groups', 'licenses', 'configs'
     sync_interval_minutes: int
-
+    continuous_sync: bool  # New flag for one-time vs continuous sync
+    
     @classmethod
     def from_env(cls):
         """Create SyncConfig from environment variables"""
+        sync_mode = os.getenv('SYNC_MODE', 'full').lower()
+        if sync_mode not in ['full', 'groups', 'licenses', 'configs']:
+            logging.warning(f"Invalid SYNC_MODE '{sync_mode}', defaulting to 'full'")
+            sync_mode = 'full'
+            
         return cls(
             dry_run=os.getenv('DRY_RUN', 'false').lower() == 'true',
-            sync_mode=os.getenv('SYNC_MODE', 'full'),
-            enable_config_sync=os.getenv('ENABLE_CONFIG_SYNC', 'true').lower() == 'true',
-            enable_license_sync=os.getenv('ENABLE_LICENSE_SYNC', 'true').lower() == 'true',
-            enable_group_sync=os.getenv('ENABLE_GROUP_SYNC', 'true').lower() == 'true',
-            unlicense_removed_devices=os.getenv('UNLICENSE_REMOVED_DEVICES', 'true').lower() == 'true',
-            sync_interval_minutes=int(os.getenv('SYNC_INTERVAL_MINUTES', '60'))
+            sync_mode=sync_mode,
+            sync_interval_minutes=int(os.getenv('SYNC_INTERVAL_MINUTES', '60')),
+            continuous_sync=os.getenv('CONTINUOUS_SYNC', 'false').lower() == 'true'
         )
+    
+    @property
+    def enable_config_sync(self) -> bool:
+        """Determine if config sync is enabled based on sync mode"""
+        return self.sync_mode in ['full', 'configs']
+    
+    @property
+    def enable_license_sync(self) -> bool:
+        """Determine if license sync is enabled based on sync mode"""
+        return self.sync_mode in ['full', 'licenses']
+    
+    @property
+    def enable_group_sync(self) -> bool:
+        """Determine if group sync is enabled based on sync mode"""
+        return self.sync_mode in ['full', 'groups']
 
 class ConfigManager:
     def __init__(self, config_path: str = None):
