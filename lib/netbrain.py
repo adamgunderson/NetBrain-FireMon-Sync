@@ -176,7 +176,7 @@ class NetBrainClient:
         logging.info(f"Retrieved {len(all_devices)} total devices from NetBrain")
         return all_devices
 
-    def _get_devices_by_type(self, device_type: str, batch_size: int = 500) -> List[Dict[str, Any]]:
+    def _get_devices_by_type(self, device_type: str, batch_size: int = 100) -> List[Dict[str, Any]]:
         """
         Get devices of a specific type using the CMDB API
         

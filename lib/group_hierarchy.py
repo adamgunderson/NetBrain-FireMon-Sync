@@ -1,102 +1,151 @@
 # lib/group_hierarchy.py
 
+"""
+Group Hierarchy Manager
+Handles the creation and management of device group hierarchies for syncing 
+between NetBrain and FireMon systems.
+
+Key features:
+- Builds group hierarchy from NetBrain sites
+- Handles parent-child relationships
+- Skips root "My Network" group
+- Validates hierarchy structure
+- Manages group cache and path mappings
+- Handles device group membership sync
+- Manages orphaned groups
+- Tracks group changes
+"""
+
 import logging
-from typing import Dict, List, Set, Optional, Any
+from typing import Dict, List, Set, Optional, Any, Tuple
 from dataclasses import dataclass
 from collections import defaultdict
-
-# lib/group_hierarchy.py
-# Handles the creation and management of device group hierarchies for syncing between NetBrain and FireMon
-
-import logging
-from typing import Dict, List, Set, Optional, Any
-from dataclasses import dataclass
-from collections import defaultdict
+from datetime import datetime
 
 @dataclass
 class GroupNode:
-    id: Optional[int]
-    name: str
-    path: str
-    parent_path: Optional[str]
-    children: Set[str]
-    site_id: Optional[str]
-    level: int
+    """Represents a node in the group hierarchy"""
+    id: Optional[int]          # FireMon group ID
+    name: str                  # Group name
+    path: str                  # Full path including ancestors
+    parent_path: Optional[str] # Path of parent group
+    children: Set[str]         # Set of child path strings
+    site_id: Optional[str]     # NetBrain site ID
+    level: int                # Hierarchy level (1-based)
 
 class GroupHierarchyManager:
+    """Manages device group hierarchies between NetBrain and FireMon"""
+    
     def __init__(self, firemon_client):
-        self.firemon = firemon_client
-        self.group_cache = {}
-        self.path_cache = {}
+        """
+        Initialize the group hierarchy manager
         
+        Args:
+            firemon_client: Initialized FireMon API client
+        """
+        self.firemon = firemon_client
+        self.group_cache = {}  # Cache of FireMon groups by name
+        self.path_cache = {}   # Cache of FireMon group IDs by path
+        self.ROOT_GROUP = "My Network"
+        self.last_sync = None
+        self.changes = []  # Track group changes
+
     def build_group_hierarchy(self, sites: List[Dict[str, Any]]) -> Dict[str, GroupNode]:
         """
-        Build complete group hierarchy with validation
+        Build complete group hierarchy with validation, excluding the root group
         
         Args:
             sites: List of site dictionaries from NetBrain
             
         Returns:
             Dictionary mapping paths to GroupNode objects
+            
+        Raises:
+            Exception: If hierarchy building fails
         """
-        hierarchy = {}
-        
-        # First pass: Create all nodes
-        for site in sites:
-            try:
-                self._create_path_nodes(site['sitePath'], site['siteId'], hierarchy)
-            except Exception as e:
-                logging.error(f"Error creating path nodes for site {site.get('sitePath', 'UNKNOWN')}: {str(e)}")
-        
-        # Second pass: Validate and fix hierarchy
-        self._validate_and_fix_hierarchy(hierarchy)
-        
-        return hierarchy
-        
+        try:
+            hierarchy = {}
+            
+            # First pass: Create all nodes
+            for site in sites:
+                try:
+                    self._create_path_nodes(site['sitePath'], site['siteId'], hierarchy)
+                except Exception as e:
+                    logging.error(f"Error creating path nodes for site {site.get('sitePath', 'UNKNOWN')}: {str(e)}")
+            
+            # Second pass: Validate and fix hierarchy
+            self._validate_and_fix_hierarchy(hierarchy)
+            
+            self.last_sync = datetime.utcnow()
+            return hierarchy
+            
+        except Exception as e:
+            logging.error(f"Error building group hierarchy: {str(e)}")
+            raise
+
     def _create_path_nodes(self, path: str, site_id: str, hierarchy: Dict[str, GroupNode]) -> None:
         """
-        Create all nodes in a path
+        Create all nodes in a path, skipping the root group
         
         Args:
             path: Full site path (e.g. "My Network/NA/DC1")
             site_id: NetBrain site ID
             hierarchy: Dictionary to store created nodes
+            
+        Raises:
+            ValueError: If path format is invalid
         """
         parts = path.split('/')
-        current_path = ''
+        
+        # Validate path
+        if not parts or parts[0] != self.ROOT_GROUP:
+            raise ValueError(f"Invalid path format, must start with '{self.ROOT_GROUP}': {path}")
+            
+        # Skip the root group
+        parts = parts[1:]
+        if not parts:  # Nothing left after skipping root
+            return
+            
+        current_path = self.ROOT_GROUP  # Keep track of full path for reference
         parent_path = None
         level = 0
         
         for part in parts:
             # Update paths
-            if current_path:
+            if current_path != self.ROOT_GROUP:
                 parent_path = current_path
-                current_path += '/'
-            current_path += part
+            current_path += '/' + part
             level += 1
             
+            # Skip empty parts and root group
+            if not part:
+                continue
+                
+            node_path = current_path
+            # For first level under root, parent will be None
+            effective_parent_path = None if parent_path == self.ROOT_GROUP else parent_path
+            
             # Create node if it doesn't exist
-            if current_path not in hierarchy:
-                hierarchy[current_path] = GroupNode(
+            if node_path not in hierarchy:
+                hierarchy[node_path] = GroupNode(
                     id=None,
                     name=part,
-                    path=current_path,
-                    parent_path=parent_path,  # Will be None for root level
+                    path=node_path,
+                    parent_path=effective_parent_path,
                     children=set(),
-                    site_id=site_id if current_path == path else None,
+                    site_id=site_id if node_path == path else None,
                     level=level
                 )
+                logging.debug(f"Created node: {part} (level {level})")
                 
-            # Update parent's children set
-            if parent_path is not None:
+            # Update parent's children set if parent exists
+            if effective_parent_path and effective_parent_path in hierarchy:
                 try:
-                    parent = hierarchy[parent_path]
-                    parent.children.add(current_path)
-                except KeyError as e:
-                    logging.error(f"Parent path {parent_path} not found in hierarchy when processing {current_path}")
-                    raise
+                    parent = hierarchy[effective_parent_path]
+                    parent.children.add(node_path)
+                    logging.debug(f"Added {node_path} as child of {effective_parent_path}")
                 except Exception as e:
-                    logging.error(f"Error updating parent node for {current_path}: {str(e)}")
+                    logging.error(f"Error updating parent node for {node_path}: {str(e)}")
                     raise
 
     def _validate_and_fix_hierarchy(self, hierarchy: Dict[str, GroupNode]) -> None:
@@ -105,6 +154,9 @@ class GroupHierarchyManager:
         
         Args:
             hierarchy: Dictionary of path to GroupNode mappings
+            
+        Raises:
+            Exception: If validation fails
         """
         try:
             # Get existing FireMon groups
@@ -116,18 +168,26 @@ class GroupHierarchyManager:
                 if node.name in fm_groups:
                     node.id = fm_groups[node.name]['id']
                     self.path_cache[path] = node.id
-                    
+                    logging.debug(f"Mapped {node.name} to FireMon ID {node.id}")
+                
+            # Check for circular references
+            self._check_circular_references(hierarchy)
+            
             # Validate parent-child relationships
             issues = []
             for path, node in hierarchy.items():
-                if node.parent_path:
+                if node.parent_path:  # Only check if node has a parent
                     parent_node = hierarchy.get(node.parent_path)
                     if not parent_node:
-                        issues.append(f"Missing parent node for {path}")
+                        # Don't report as issue if parent is root group
+                        if node.parent_path != self.ROOT_GROUP:
+                            issues.append(f"Missing parent node for {path}")
                         continue
                         
                     if parent_node.id is None:
-                        issues.append(f"Parent group not found in FireMon for {path}")
+                        # Don't report as issue if parent is root group
+                        if node.parent_path != self.ROOT_GROUP:
+                            issues.append(f"Parent group not found in FireMon for {path}")
                         continue
                         
                     # Check if current node exists in FireMon
@@ -142,128 +202,144 @@ class GroupHierarchyManager:
         except Exception as e:
             logging.error(f"Error validating hierarchy: {str(e)}")
             raise
-            
-    def sync_group_hierarchy(self, hierarchy: Dict[str, GroupNode], dry_run: bool = False) -> List[Dict[str, Any]]:
-        """Synchronize group hierarchy to FireMon"""
-        changes = []
-        processed_groups = set()
+
+    def _check_circular_references(self, hierarchy: Dict[str, GroupNode]) -> None:
+        """Check for circular references in the hierarchy"""
+        visited = set()
+        path = []
         
-        try:
-            # Process hierarchy level by level
-            max_level = max(node.level for node in hierarchy.values())
-            
-            for level in range(1, max_level + 1):
-                level_nodes = {
-                    path: node for path, node in hierarchy.items() 
-                    if node.level == level
-                }
+        def visit(node_path: str):
+            if node_path in path:
+                cycle = path[path.index(node_path):] + [node_path]
+                raise ValueError(f"Circular reference detected: {' -> '.join(cycle)}")
                 
-                for path, node in level_nodes.items():
+            if node_path in visited:
+                return
+                
+            visited.add(node_path)
+            path.append(node_path)
+            
+            node = hierarchy.get(node_path)
+            if node:
+                for child in node.children:
+                    visit(child)
+                    
+            path.pop()
+            
+        for node_path in hierarchy:
+            visit(node_path)
+
+    def sync_device_group_membership(self, device_id: int, site_path: str, dry_run: bool = False) -> List[Dict[str, Any]]:
+        """
+        Sync device group membership based on site path
+        
+        Args:
+            device_id: FireMon device ID
+            site_path: NetBrain site path
+            dry_run: If True, only report changes without making them
+            
+        Returns:
+            List of changes made or that would be made
+        """
+        changes = []
+        try:
+            # Get current device group memberships
+            current_groups = self.firemon.get_device_groups(device_id)
+            current_group_ids = {g['id'] for g in current_groups}
+            
+            # Get target groups based on site path
+            target_groups = set()
+            path_parts = site_path.split('/')
+            current_path = ''
+            
+            for part in path_parts[1:]:  # Skip root group
+                if current_path:
+                    current_path += '/'
+                current_path += part
+                
+                group = self.group_cache.get(current_path)
+                if not group:
+                    # Search for group and cache it
+                    group = self.firemon.find_group_by_path(current_path)
+                    if group:
+                        self.group_cache[current_path] = group
+                        target_groups.add(group['id'])
+
+            # Calculate group changes
+            groups_to_add = target_groups - current_group_ids
+            groups_to_remove = current_group_ids - target_groups
+
+            if not dry_run:
+                # Add device to new groups
+                for group_id in groups_to_add:
                     try:
-                        change = self._process_group_node(node, hierarchy, dry_run)
-                        if change:
-                            changes.append(change)
-                        processed_groups.add(node.name)
-                        
+                        self.firemon.add_device_to_group(group_id, device_id)
+                        changes.append({
+                            'action': 'add_to_group',
+                            'group_id': group_id,
+                            'device_id': device_id,
+                            'status': 'success'
+                        })
                     except Exception as e:
-                        logging.error(f"Error processing group {node.name}: {str(e)}")
                         changes.append({
                             'action': 'error',
-                            'group': node.name,
-                            'error': str(e),
-                            'status': 'error'
+                            'group_id': group_id,
+                            'device_id': device_id,
+                            'error': str(e)
                         })
-                        
-            # Handle orphaned groups
-            if not dry_run:
-                orphaned = self._handle_orphaned_groups(processed_groups)
-                changes.extend(orphaned)
-                
-        except Exception as e:
-            logging.error(f"Error in sync_group_hierarchy: {str(e)}")
-            raise
-            
-        return changes
-        
-    def _process_group_node(self, node: GroupNode, hierarchy: Dict[str, GroupNode], 
-                          dry_run: bool) -> Optional[Dict[str, Any]]:
-        """Process individual group node"""
-        try:
-            if node.id is None:
-                # Create new group
-                if not dry_run:
-                    parent_id = None
-                    if node.parent_path:
-                        parent_node = hierarchy[node.parent_path]
-                        parent_id = parent_node.id
-                        
-                    group_data = {
-                        'name': node.name,
-                        'description': f'NetBrain site: {node.path}',
-                        'parentId': parent_id,
-                        'domainId': self.firemon.domain_id
-                    }
-                    
-                    new_group = self.firemon.create_device_group(group_data)
-                    node.id = new_group['id']
-                    self.path_cache[node.path] = node.id
-                    
-                    return {
-                        'action': 'create',
-                        'group': node.name,
-                        'path': node.path,
-                        'status': 'success'
-                    }
-                    
-                return {
-                    'action': 'create',
-                    'group': node.name,
-                    'path': node.path,
-                    'status': 'dry_run'
-                }
-                
-            else:
-                # Update existing group if needed
-                fm_group = self.group_cache.get(node.name)
-                if fm_group:
-                    updates_needed = []
-                    parent_id = None
-                    
-                    if node.parent_path:
-                        parent_node = hierarchy[node.parent_path]
-                        if parent_node.id != fm_group.get('parentId'):
-                            updates_needed.append('parent')
-                            parent_id = parent_node.id
-                            
-                    if updates_needed and not dry_run:
-                        fm_group['parentId'] = parent_id
-                        self.firemon.update_device_group(fm_group['id'], fm_group)
-                        return {
-                            'action': 'update',
-                            'group': node.name,
-                            'updates': updates_needed,
-                            'status': 'success'
-                        }
-                        
-                    elif updates_needed:
-                        return {
-                            'action': 'update',
-                            'group': node.name,
-                            'updates': updates_needed,
-                            'status': 'dry_run'
-                        }
-                        
-        except Exception as e:
-            logging.error(f"Error processing group {node.name}: {str(e)}")
-            return {
-                'action': 'error',
-                'group': node.name,
-                'error': str(e),
-                'status': 'error'
-            }
 
-    def _handle_orphaned_groups(self, processed_groups: Set[str]) -> List[Dict[str, Any]]:
-        """Handle groups that exist in FireMon but not in NetBrain"""
+                # Remove device from old groups
+                for group_id in groups_to_remove:
+                    try:
+                        self.firemon.remove_device_from_group(group_id, device_id)
+                        changes.append({
+                            'action': 'remove_from_group',
+                            'group_id': group_id,
+                            'device_id': device_id,
+                            'status': 'success'
+                        })
+                    except Exception as e:
+                        changes.append({
+                            'action': 'error',
+                            'group_id': group_id,
+                            'device_id': device_id,
+                            'error': str(e)
+                        })
+            else:
+                # Record planned changes for dry run
+                for group_id in groups_to_add:
+                    changes.append({
+                        'action': 'add_to_group',
+                        'group_id': group_id,
+                        'device_id': device_id,
+                        'status': 'dry_run'
+                    })
+                
+                for group_id in groups_to_remove:
+                    changes.append({
+                        'action': 'remove_from_group',
+                        'group_id': group_id,
+                        'device_id': device_id,
+                        'status': 'dry_run'
+                    })
+
+            return changes
+            
+        except Exception as e:
+            logging.error(f"Error syncing device {device_id} group membership: {str(e)}")
+            raise
+
+    def handle_orphaned_groups(self, processed_groups: Set[str], dry_run: bool = False) -> List[Dict[str, Any]]:
+        """
+        Handle groups that exist in FireMon but not in NetBrain
+        
+        Args:
+            processed_groups: Set of group names that should be kept
+            dry_run: If True, only report changes without making them
+            
+        Returns:
+            List of changes made or that would be made
+        """
         changes = []
         try:
             fm_groups = self.firemon.get_device_groups()
@@ -274,59 +350,124 @@ class GroupHierarchyManager:
                     if group.get('system', False) or not group.get('parentId'):
                         continue
                         
-                    try:
-                        # Remove devices from group first
-                        devices = self.firemon.get_devices_in_group(group['id'])
-                        for device in devices:
-                            self.firemon.remove_device_from_group(group['id'], device['id'])
+                    if not dry_run:
+                        try:
+                            # Remove devices from group first
+                            devices = self.firemon.get_devices_in_group(group['id'])
+                            for device in devices:
+                                self.firemon.remove_device_from_group(group['id'], device['id'])
+                                
+                            # Delete the group
+                            self.firemon.delete_device_group(group['id'])
+                            changes.append({
+                                'action': 'delete',
+                                'group': group['name'],
+                                'status': 'success'
+                            })
                             
-                        # Delete the group
-                        self.firemon.delete_device_group(group['id'])
+                        except Exception as e:
+                            changes.append({
+                                'action': 'error',
+                                'group': group['name'],
+                                'error': f"Error deleting group: {str(e)}",
+                                'status': 'error'
+                            })
+                    else:
                         changes.append({
                             'action': 'delete',
                             'group': group['name'],
-                            'status': 'success'
-                        })
-                        
-                    except Exception as e:
-                        changes.append({
-                            'action': 'error',
-                            'group': group['name'],
-                            'error': f"Error deleting group: {str(e)}",
-                            'status': 'error'
+                            'status': 'dry_run'
                         })
                         
         except Exception as e:
             logging.error(f"Error handling orphaned groups: {str(e)}")
             
         return changes
+
+    def get_group_by_path(self, path: str) -> Optional[Dict[str, Any]]:
+        """
+        Get FireMon group by path
         
-    def get_group_path(self, group_id: int) -> Optional[str]:
-        """Get full path for a group ID"""
-        for path, gid in self.path_cache.items():
-            if gid == group_id:
-                return path
-        return None
+        Args:
+            path: Full path to group
+            
+        Returns:
+            FireMon group dictionary or None if not found
+        """
+        try:
+            # Skip root group from path if present
+            if path.startswith(f"{self.ROOT_GROUP}/"):
+                path = path[len(self.ROOT_GROUP)+1:]
+            
+            # Get group by name (last part of path)
+            group_name = path.split('/')[-1]
+            return self.group_cache.get(group_name)
+            
+        except Exception as e:
+            logging.error(f"Error getting group by path {path}: {str(e)}")
+            return None
+
+    def get_effective_parent_id(self, node: GroupNode, hierarchy: Dict[str, GroupNode]) -> Optional[int]:
+        """
+        Get effective parent ID for a node, handling root group special case
         
-    def ensure_path_exists(self, path: str, site_id: Optional[str] = None,
-                          dry_run: bool = False) -> List[Dict[str, Any]]:
-        """Ensure a complete path exists, creating missing groups if needed"""
-        changes = []
-        hierarchy = {}
+        Args:
+            node: GroupNode to get parent for
+            hierarchy: Current hierarchy dictionary
+            
+        Returns:
+            FireMon parent group ID or None for top-level groups
+        """
+        if not node.parent_path or node.parent_path == self.ROOT_GROUP:
+            return None
+            
+        parent_node = hierarchy.get(node.parent_path)
+        return parent_node.id if parent_node else None
+
+    def get_path_components(self, path: str) -> Tuple[List[str], bool]:
+        """
+        Split path into components and validate format
         
-        # Build path nodes
-        self._create_path_nodes(path, site_id, hierarchy)
+        Args:
+            path: Path string to process
+            
+        Returns:
+            Tuple of (path components, starts_with_root)
+        """
+        parts = path.split('/')
+        starts_with_root = parts and parts[0] == self.ROOT_GROUP
         
-        # Sync the path
-        for node in sorted(hierarchy.values(), key=lambda x: x.level):
-            change = self._process_group_node(node, hierarchy, dry_run)
-            if change:
-                changes.append(change)
-                
-        return changes
+        # Remove root group if present
+        if starts_with_root:
+            parts = parts[1:]
+            
+        return parts, starts_with_root
+
+    def get_hierarchy_summary(self) -> Dict[str, Any]:
+        """
+        Get summary statistics about the current hierarchy
+        
+        Returns:
+            Dictionary containing hierarchy statistics
+        """
+        return {
+            'total_groups': len(self.group_cache),
+            'mapped_paths': len(self.path_cache),
+            'last_sync': self.last_sync.isoformat() if self.last_sync else None,
+            'changes': len(self.changes)
+        }
 
     def get_group_membership_changes(self, device_id: int, site_path: str) -> Dict[str, Set[int]]:
-        """Calculate group membership changes needed"""
+        """
+        Calculate group membership changes needed
+        
+        Args:
+            device_id: FireMon device ID
+            site_path: NetBrain site path
+            
+        Returns:
+            Dictionary with sets of group IDs to add and remove
+        """
         current_groups = set()
         target_groups = set()
         
@@ -343,6 +484,9 @@ class GroupHierarchyManager:
                 current_path += '/'
             current_path += part
             
+            if current_path == self.ROOT_GROUP:
+                continue
+                
             group_id = self.path_cache.get(current_path)
             if group_id:
                 target_groups.add(group_id)
@@ -352,82 +496,105 @@ class GroupHierarchyManager:
             'remove': current_groups - target_groups
         }
 
-    def validate_hierarchy(self) -> List[Dict[str, Any]]:
-        """Validate entire group hierarchy"""
-        logging.debug("Starting group hierarchy validation")
-        issues = []
+    def validate_group_memberships(self) -> List[Dict[str, Any]]:
+        """
+        Validate all device group memberships
         
+        Returns:
+            List of validation issues found
+        """
+        issues = []
         try:
-            # Get current device groups from FireMon
-            fm_groups = self.firemon.get_device_groups()
-            logging.debug(f"Retrieved {len(fm_groups)} device groups from FireMon")
+            # Get all FireMon devices
+            devices = self.firemon.get_all_devices()
             
-            # Create lookup map
-            group_map = {g['id']: g for g in fm_groups}
-            
-            # Check each group
-            for group in fm_groups:
-                logging.debug(f"Validating group: {group['name']}")
+            for device in devices:
+                device_groups = self.firemon.get_device_groups(device['id'])
+                group_ids = {g['id'] for g in device_groups}
                 
-                # Check parent relationship
-                if group.get('parentId'):
-                    parent = group_map.get(group['parentId'])
-                    if not parent:
-                        msg = f"Group {group['name']} has missing parent ID: {group['parentId']}"
-                        logging.error(msg)
+                # Check for orphaned group memberships
+                for group in device_groups:
+                    if group['id'] not in self.path_cache.values():
                         issues.append({
-                            'type': 'missing_parent',
-                            'group': group['name'],
+                            'type': 'orphaned_membership',
+                            'device_id': device['id'],
+                            'device_name': device['name'],
                             'group_id': group['id'],
-                            'parent_id': group['parentId'],
-                            'severity': 'error',
-                            'message': msg
+                            'group_name': group['name'],
+                            'severity': 'warning'
                         })
                         
-                # Check for circular references
-                current_group = group
-                visited = {group['id']}
-                
-                while current_group.get('parentId'):
-                    parent_id = current_group['parentId']
-                    if parent_id in visited:
-                        msg = f"Circular reference detected for group {group['name']}"
-                        logging.error(msg)
+                # Check for missing required groups
+                if device.get('site'):
+                    expected_changes = self.get_group_membership_changes(device['id'], device.get('site'))
+                    if expected_changes['add']:
                         issues.append({
-                            'type': 'circular_reference',
-                            'group': group['name'],
-                            'path': [g for g in visited],
-                            'severity': 'error',
-                            'message': msg
-                        })
-                        break
-                        
-                    visited.add(parent_id)
-                    current_group = group_map.get(parent_id, {})
-                    
-                # Check child references
-                if 'childDeviceGroups' in group:
-                    child_ids = [c['id'] for c in fm_groups if c.get('parentId') == group['id']]
-                    if len(child_ids) != group['childDeviceGroups']:
-                        msg = f"Group {group['name']} has inconsistent child count"
-                        logging.warning(msg)
-                        issues.append({
-                            'type': 'inconsistent_children',
-                            'group': group['name'],
-                            'expected': group['childDeviceGroups'],
-                            'actual': len(child_ids),
-                            'severity': 'warning',
-                            'message': msg
+                            'type': 'missing_groups',
+                            'device_id': device['id'],
+                            'device_name': device['name'],
+                            'missing_groups': list(expected_changes['add']),
+                            'severity': 'error'
                         })
                         
         except Exception as e:
-            msg = f"Error validating hierarchy: {str(e)}"
-            logging.error(msg)
+            logging.error(f"Error validating group memberships: {str(e)}")
             issues.append({
                 'type': 'validation_error',
-                'message': msg,
+                'error': str(e),
                 'severity': 'error'
             })
             
-        logging.debug(f"Validation complete, found {len(issues)} issues")
         return issues
+
+    def track_change(self, change: Dict[str, Any]) -> None:
+        """
+        Track a group-related change
+        
+        Args:
+            change: Dictionary describing the change
+        """
+        change['timestamp'] = datetime.utcnow().isoformat()
+        self.changes.append(change)
+
+    def clear_caches(self) -> None:
+        """Clear internal caches"""
+        self.group_cache.clear()
+        self.path_cache.clear()
+        self.last_sync = None
+        self.changes = []
+        logging.debug("Cleared group hierarchy caches")
+
+    def get_parent_chain(self, group_id: int) -> List[int]:
+        """
+        Get chain of parent group IDs
+        
+        Args:
+            group_id: FireMon group ID
+            
+        Returns:
+            List of parent group IDs from bottom to top
+        """
+        chain = []
+        current_id = group_id
+        
+        while current_id:
+            if current_id in chain:  # Prevent infinite loops
+                logging.error(f"Circular reference detected in parent chain for group {group_id}")
+                break
+                
+            chain.append(current_id)
+            group = next((g for g in self.firemon.get_device_groups() if g['id'] == current_id), None)
+            if not group:
+                break
+                
+            current_id = group.get('parentId')
+            
+        return chain
+
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit"""
+        self.clear_caches()
