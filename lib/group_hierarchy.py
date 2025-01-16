@@ -5,6 +5,14 @@ from typing import Dict, List, Set, Optional, Any
 from dataclasses import dataclass
 from collections import defaultdict
 
+# lib/group_hierarchy.py
+# Handles the creation and management of device group hierarchies for syncing between NetBrain and FireMon
+
+import logging
+from typing import Dict, List, Set, Optional, Any
+from dataclasses import dataclass
+from collections import defaultdict
+
 @dataclass
 class GroupNode:
     id: Optional[int]
@@ -22,79 +30,118 @@ class GroupHierarchyManager:
         self.path_cache = {}
         
     def build_group_hierarchy(self, sites: List[Dict[str, Any]]) -> Dict[str, GroupNode]:
-        """Build complete group hierarchy with validation"""
+        """
+        Build complete group hierarchy with validation
+        
+        Args:
+            sites: List of site dictionaries from NetBrain
+            
+        Returns:
+            Dictionary mapping paths to GroupNode objects
+        """
         hierarchy = {}
         
         # First pass: Create all nodes
         for site in sites:
-            self._create_path_nodes(site['sitePath'], site['siteId'], hierarchy)
-            
+            try:
+                self._create_path_nodes(site['sitePath'], site['siteId'], hierarchy)
+            except Exception as e:
+                logging.error(f"Error creating path nodes for site {site.get('sitePath', 'UNKNOWN')}: {str(e)}")
+        
         # Second pass: Validate and fix hierarchy
         self._validate_and_fix_hierarchy(hierarchy)
         
         return hierarchy
         
     def _create_path_nodes(self, path: str, site_id: str, hierarchy: Dict[str, GroupNode]) -> None:
-        """Create all nodes in a path"""
+        """
+        Create all nodes in a path
+        
+        Args:
+            path: Full site path (e.g. "My Network/NA/DC1")
+            site_id: NetBrain site ID
+            hierarchy: Dictionary to store created nodes
+        """
         parts = path.split('/')
         current_path = ''
+        parent_path = None
         level = 0
         
         for part in parts:
+            # Update paths
             if current_path:
+                parent_path = current_path
                 current_path += '/'
             current_path += part
             level += 1
             
+            # Create node if it doesn't exist
             if current_path not in hierarchy:
-                parent_path = '/'.join(current_path.split('/')[:-1])
                 hierarchy[current_path] = GroupNode(
                     id=None,
                     name=part,
                     path=current_path,
-                    parent_path=parent_path if parent_path else None,
+                    parent_path=parent_path,  # Will be None for root level
                     children=set(),
                     site_id=site_id if current_path == path else None,
                     level=level
                 )
                 
-            if level > 1:
-                parent = hierarchy[parent_path]
-                parent.children.add(current_path)
-                
+            # Update parent's children set
+            if parent_path is not None:
+                try:
+                    parent = hierarchy[parent_path]
+                    parent.children.add(current_path)
+                except KeyError as e:
+                    logging.error(f"Parent path {parent_path} not found in hierarchy when processing {current_path}")
+                    raise
+                except Exception as e:
+                    logging.error(f"Error updating parent node for {current_path}: {str(e)}")
+                    raise
+
     def _validate_and_fix_hierarchy(self, hierarchy: Dict[str, GroupNode]) -> None:
-        """Validate hierarchy and fix any issues"""
-        # Get existing FireMon groups
-        fm_groups = {g['name']: g for g in self.firemon.get_device_groups()}
-        self.group_cache.update(fm_groups)
+        """
+        Validate hierarchy and fix any issues
         
-        # Map paths to FireMon group IDs
-        for path, node in hierarchy.items():
-            if node.name in fm_groups:
-                node.id = fm_groups[node.name]['id']
-                self.path_cache[path] = node.id
-                
-        # Validate parent-child relationships
-        issues = []
-        for path, node in hierarchy.items():
-            if node.parent_path:
-                parent_node = hierarchy.get(node.parent_path)
-                if not parent_node:
-                    issues.append(f"Missing parent node for {path}")
-                    continue
+        Args:
+            hierarchy: Dictionary of path to GroupNode mappings
+        """
+        try:
+            # Get existing FireMon groups
+            fm_groups = {g['name']: g for g in self.firemon.get_device_groups()}
+            self.group_cache.update(fm_groups)
+            
+            # Map paths to FireMon group IDs
+            for path, node in hierarchy.items():
+                if node.name in fm_groups:
+                    node.id = fm_groups[node.name]['id']
+                    self.path_cache[path] = node.id
                     
-                if parent_node.id is None:
-                    issues.append(f"Parent group not found in FireMon for {path}")
-                    continue
-                    
-                # Check if current node exists in FireMon
-                if node.id is not None:
-                    fm_group = fm_groups.get(node.name)
-                    if fm_group and fm_group.get('parentId') != parent_node.id:
-                        issues.append(f"Incorrect parent group for {path}")
+            # Validate parent-child relationships
+            issues = []
+            for path, node in hierarchy.items():
+                if node.parent_path:
+                    parent_node = hierarchy.get(node.parent_path)
+                    if not parent_node:
+                        issues.append(f"Missing parent node for {path}")
+                        continue
                         
-        if issues:
-            logging.warning(f"Hierarchy issues found: {issues}")
+                    if parent_node.id is None:
+                        issues.append(f"Parent group not found in FireMon for {path}")
+                        continue
+                        
+                    # Check if current node exists in FireMon
+                    if node.id is not None:
+                        fm_group = fm_groups.get(node.name)
+                        if fm_group and fm_group.get('parentId') != parent_node.id:
+                            issues.append(f"Incorrect parent group for {path}")
+                            
+            if issues:
+                logging.warning(f"Hierarchy validation issues found: {issues}")
+                
+        except Exception as e:
+            logging.error(f"Error validating hierarchy: {str(e)}")
+            raise
             
     def sync_group_hierarchy(self, hierarchy: Dict[str, GroupNode], dry_run: bool = False) -> List[Dict[str, Any]]:
         """Synchronize group hierarchy to FireMon"""
