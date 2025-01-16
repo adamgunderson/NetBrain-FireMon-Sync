@@ -182,13 +182,12 @@ class NetBrainClient:
         
         return all_devices
 
-    def _get_devices_by_type(self, device_type: str, batch_size: int = 100) -> List[Dict[str, Any]]:
+    def _get_devices_by_type(self, device_type: str) -> List[Dict[str, Any]]:
         """
         Get devices of a specific type using the CMDB API
         
         Args:
             device_type: Device type to search for
-            batch_size: Number of records to retrieve per request
                 
         Returns:
             List of device dictionaries
@@ -205,57 +204,41 @@ class NetBrainClient:
             'subTypeName': device_type
         }
         
-        # Keep track of total devices
-        total_count = None
-        
-        while True:
-            try:
+        try:
+            while True:
                 # Build query parameters
                 params = {
                     'version': '1',
-                    'limit': batch_size,
                     'skip': skip,
-                    'fullattr': '1',
+                    'fullattr': '1',  # Get full attributes
                     'filter': json.dumps(device_filter)
                 }
                 
+                logging.debug(f"Retrieving devices with skip={skip} for type {device_type}")
+                
                 response = self._request('GET', url, params=params)
-                
-                # Get total count from response
-                if total_count is None:
-                    total_count = response.get('totalResultCount', 0)
-                    logging.debug(f"Found {total_count} total devices of type {device_type}")
-                    
-                    if total_count == 0:
-                        break
-                
-                # Process device batch
                 batch_data = response.get('devices', [])
-                if not batch_data:
+                
+                if not batch_data:  # No more devices
                     break
                     
+                count = len(batch_data)
                 devices.extend(self._parse_device_data(batch_data))
                 
-                logging.debug(f"Retrieved {len(devices)}/{total_count} devices of type {device_type}")
+                logging.debug(f"Retrieved {count} devices in current batch for type {device_type}")
                 
-                # Check if we've retrieved all devices
-                if len(devices) >= total_count:
+                if count < 50:  # Default batch size is 50, if less received we're done
                     break
                     
-                # Increment skip for next batch
-                skip += len(batch_data)
+                skip += count  # Increment skip for next batch
                 
-            except Exception as e:
-                logging.error(f"Error retrieving devices of type {device_type} (skip={skip}): {str(e)}")
-                break
-                
-        logging.info(f"Retrieved total of {len(devices)}/{total_count} devices of type {device_type}")
-        
-        # Verify we got all expected devices
-        if total_count and len(devices) < total_count:
-            logging.warning(f"Only retrieved {len(devices)} of {total_count} expected devices of type {device_type}")
+            logging.info(f"Retrieved total of {len(devices)} devices of type {device_type}")
+            return devices
             
-        return devices
+        except Exception as e:
+            error_msg = f"Error retrieving devices of type {device_type}: {str(e)}"
+            logging.error(error_msg)
+            raise NetBrainAPIError(error_msg)
 
     def _parse_device_data(self, devices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -411,21 +394,59 @@ class NetBrainClient:
             self.authenticate()
 
         try:
-            response = self.session.request(method, endpoint, **kwargs)
+            # Set up headers for NetBrain API
+            headers = {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Token': self.token,
+                'Tenant': self.tenant
+            }
+            
+            # Update session headers
+            self.session.headers.update(headers)
+            
+            # Log request details in debug mode
+            logging.debug(f"Making NetBrain API request: {method} {endpoint}")
+            logging.debug(f"Request parameters: {kwargs}")
+            
+            response = self.session.request(method, endpoint, verify=False, **kwargs)
             
             # Handle 401 by re-authenticating once
             if response.status_code == 401:
                 logging.debug("Token expired during request, re-authenticating...")
                 self.authenticate()
-                response = self.session.request(method, endpoint, **kwargs)
+                # Update token in headers after re-auth
+                self.session.headers.update({'Token': self.token})
+                response = self.session.request(method, endpoint, verify=False, **kwargs)
             
             response.raise_for_status()
-            return response.json()
+            
+            # Parse response
+            response_data = response.json()
+            
+            # Check for API-specific error responses
+            if isinstance(response_data, dict):
+                if response_data.get('statusCode') != 790200 and 'error' in response_data:
+                    error_msg = response_data.get('error', 'Unknown API error')
+                    raise NetBrainAPIError(f"API error: {error_msg}")
+            
+            logging.debug(f"API request successful: {method} {endpoint}")
+            return response_data
             
         except requests.exceptions.HTTPError as e:
-            raise NetBrainAPIError(f"API request failed: {e.response.status_code} {e.response.reason} for url: {e.response.url}")
+            error_msg = f"API request failed: {e.response.status_code} {e.response.reason} for url: {e.response.url}"
+            logging.error(error_msg)
+            try:
+                error_detail = e.response.json()
+                logging.error(f"Error details: {error_detail}")
+            except:
+                pass
+            raise NetBrainAPIError(error_msg)
+            
         except Exception as e:
-            raise NetBrainError(f"Unexpected error: {str(e)}")
+            error_msg = f"Unexpected error during API request: {str(e)}"
+            logging.error(error_msg)
+            raise NetBrainError(error_msg)
 
     def get_sites(self) -> List[Dict[str, Any]]:
         """
