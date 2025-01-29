@@ -200,10 +200,27 @@ class SyncManager:
                         self.changes['devices'].append({
                             'device': hostname,
                             'action': 'add',
-                            'status': 'dry_run'
+                            'status': 'dry_run',
+                            'details': {
+                                'mgmt_ip': device['mgmtIP'],
+                                'site': device.get('site'),
+                                'type': device['attributes'].get('subTypeName')
+                            }
                         })
             else:
-                self._update_device_if_needed(device, fm_device)
+                if not self.config_manager.sync_config.dry_run:
+                    self._update_device_if_needed(device, fm_device)
+                else:
+                    # In dry run mode, simulate changes without making API calls
+                    with self._changes_lock:
+                        self.changes['devices'].append({
+                            'device': hostname,
+                            'action': 'update',
+                            'status': 'dry_run',
+                            'details': {
+                                'would_update': ['config', 'group', 'license']
+                            }
+                        })
 
         except Exception as e:
             logging.error(f"Error processing device {device['hostname']}: {str(e)}")
@@ -334,7 +351,6 @@ class SyncManager:
                         self._process_device_configs, device
                     ))
                 concurrent.futures.wait(futures)
-
         except Exception as e:
             logging.error(f"Error in parallel config sync: {str(e)}")
             raise
@@ -476,56 +492,59 @@ class SyncManager:
         return status
 
     def _update_device_if_needed(self, nb_device: Dict[str, Any], 
-                               fm_device: Dict[str, Any]) -> None:
+                            fm_device: Dict[str, Any]) -> None:
         """Update device if changes detected"""
         try:
+            # In dry run mode, skip actual update checks
+            if self.config_manager.sync_config.dry_run:
+                with self._changes_lock:
+                    self.changes['devices'].append({
+                        'device': nb_device['hostname'],
+                        'action': 'update',
+                        'status': 'dry_run',
+                        'details': {
+                            'would_check': ['config', 'group', 'license']
+                        }
+                    })
+                return
+
             updates_needed = self._check_device_updates(nb_device, fm_device)
-            
             if not updates_needed:
                 return
+
+            # Process updates in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                futures = []
                 
-            if not self.config_manager.sync_config.dry_run:
-                # Process updates in parallel
-                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                    futures = []
+                if 'config' in updates_needed:
+                    futures.append(executor.submit(
+                        self._update_device_config, nb_device, fm_device['id']
+                    ))
                     
-                    if 'config' in updates_needed:
-                        futures.append(executor.submit(
-                            self._update_device_config, nb_device, fm_device['id']
-                        ))
-                        
-                    if 'group' in updates_needed:
-                        futures.append(executor.submit(
-                            self._update_device_group_membership, 
-                            fm_device['id'], 
-                            nb_device['site']
-                        ))
-                        
-                    if 'license' in updates_needed:
-                        futures.append(executor.submit(
-                            self._update_device_licensing,
-                            fm_device['id'],
-                            updates_needed['license']
-                        ))
-                        
-                    concurrent.futures.wait(futures)
+                if 'group' in updates_needed:
+                    futures.append(executor.submit(
+                        self._update_device_group_membership, 
+                        fm_device['id'], 
+                        nb_device['site']
+                    ))
                     
-                with self._changes_lock:
-                    self.changes['devices'].append({
-                        'device': nb_device['hostname'],
-                        'action': 'update',
-                        'updates': list(updates_needed.keys()),
-                        'status': 'success'
-                    })
-            else:
-                with self._changes_lock:
-                    self.changes['devices'].append({
-                        'device': nb_device['hostname'],
-                        'action': 'update',
-                        'updates': list(updates_needed.keys()),
-                        'status': 'dry_run'
-                    })
+                if 'license' in updates_needed:
+                    futures.append(executor.submit(
+                        self._update_device_licensing,
+                        fm_device['id'],
+                        updates_needed['license']
+                    ))
                     
+                concurrent.futures.wait(futures)
+                
+            with self._changes_lock:
+                self.changes['devices'].append({
+                    'device': nb_device['hostname'],
+                    'action': 'update',
+                    'updates': list(updates_needed.keys()),
+                    'status': 'success'
+                })
+                
         except Exception as e:
             logging.error(f"Error updating device {nb_device['hostname']}: {str(e)}")
             with self._changes_lock:
@@ -537,36 +556,47 @@ class SyncManager:
                 })
 
     def _check_device_updates(self, nb_device: Dict[str, Any], 
-                            fm_device: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                         fm_device: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Check what device aspects need updating"""
         updates = {}
         
-        # Check configuration
-        if self.config_manager.sync_config.enable_config_sync:
+        # Skip actual config checks in dry run mode
+        if self.config_manager.sync_config.enable_config_sync and not self.config_manager.sync_config.dry_run:
             nb_config_time = self.netbrain.get_device_config_time(nb_device['id'])
             fm_config_time = self.firemon.get_device_revision(fm_device['id'])
             
             if nb_config_time and fm_config_time:
                 if TimestampUtil.is_newer_than(nb_config_time, fm_config_time['completeDate']):
                     updates['config'] = True
+        elif self.config_manager.sync_config.enable_config_sync and self.config_manager.sync_config.dry_run:
+            # In dry run mode, just mark config as needing update for reporting
+            updates['config'] = True
         
         # Check group membership
         if self.config_manager.sync_config.enable_group_sync:
-            current_groups = set(g['id'] for g in self.firemon.get_device_groups(fm_device['id']))
-            target_groups = self._get_target_groups(nb_device['site'])
-            
-            if current_groups != target_groups:
-                updates['group'] = {'add': target_groups - current_groups,
-                                  'remove': current_groups - target_groups}
+            if not self.config_manager.sync_config.dry_run:
+                current_groups = set(g['id'] for g in self.firemon.get_device_groups(fm_device['id']))
+                target_groups = self._get_target_groups(nb_device['site'])
+                
+                if current_groups != target_groups:
+                    updates['group'] = {'add': target_groups - current_groups,
+                                      'remove': current_groups - target_groups}
+            else:
+                # In dry run mode, just mark group as needing update for reporting
+                updates['group'] = {'add': set(), 'remove': set()}
         
         # Check licensing
         if self.config_manager.sync_config.enable_license_sync:
-            current_licenses = set(fm_device.get('licenses', []))
-            required_licenses = {'SM', 'PO', 'PP'}
-            
-            missing_licenses = required_licenses - current_licenses
-            if missing_licenses:
-                updates['license'] = {'add': missing_licenses}
+            if not self.config_manager.sync_config.dry_run:
+                current_licenses = set(fm_device.get('licenses', []))
+                required_licenses = {'SM', 'PO', 'PP'}
+                
+                missing_licenses = required_licenses - current_licenses
+                if missing_licenses:
+                    updates['license'] = {'add': missing_licenses}
+            else:
+                # In dry run mode, just mark licensing as needing update for reporting
+                updates['license'] = {'add': {'SM', 'PO', 'PP'}}
         
         return updates if updates else None
 
