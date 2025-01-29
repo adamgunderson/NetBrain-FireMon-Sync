@@ -1,4 +1,9 @@
 # lib/validation.py
+"""
+Validation Manager for NetBrain to FireMon synchronization
+Handles validation of device groups, configurations, and licensing
+Includes dry-run awareness to prevent unnecessary API calls
+"""
 
 import logging
 from typing import Dict, List, Any, Optional
@@ -11,14 +16,80 @@ class ValidationManager:
         self.config = config_manager
         self.validation_results = {}
 
-    def validate_device_groups(self) -> List[Dict[str, Any]]:
-        """Validate device group assignments"""
+    def validate_configs(self) -> List[Dict[str, Any]]:
+        """
+        Validate configuration imports
+        Skips actual API calls in dry-run mode
+        """
         issues = []
         try:
-            # Get all FireMon device groups
-            fm_groups = self.firemon.get_device_groups()
+            # Skip config validation in dry-run mode
+            if self.config.sync_config.dry_run:
+                logging.debug("Skipping config validation in dry-run mode")
+                issues.append({
+                    'type': 'dry_run',
+                    'message': 'Configuration validation skipped in dry-run mode',
+                    'severity': 'info'
+                })
+                return issues
+
+            # Get all devices in both systems
+            nb_devices = self.netbrain.get_all_devices()
             
-            # Get NetBrain site hierarchy
+            for device in nb_devices:
+                fm_device = self.firemon.search_device(
+                    device['hostname'],
+                    device['mgmtIP']
+                )
+                
+                if fm_device:
+                    # Compare configuration timestamps
+                    nb_config_time = self.netbrain.get_device_config_time(device['id'])
+                    fm_config_time = self.firemon.get_device_revision(fm_device['id'])
+                    
+                    if nb_config_time and fm_config_time:
+                        nb_time = datetime.fromisoformat(nb_config_time.replace('Z', '+00:00'))
+                        fm_time = datetime.fromisoformat(fm_config_time['completeDate'])
+                        
+                        if nb_time > fm_time:
+                            issues.append({
+                                'type': 'outdated_config',
+                                'device': device['hostname'],
+                                'nb_time': nb_time,
+                                'fm_time': fm_time,
+                                'severity': 'warning'
+                            })
+
+        except Exception as e:
+            logging.error(f"Error validating configurations: {str(e)}")
+            issues.append({
+                'type': 'validation_error',
+                'message': str(e),
+                'severity': 'error'
+            })
+
+        self.validation_results['configs'] = issues
+        return issues
+
+    def validate_device_groups(self) -> List[Dict[str, Any]]:
+        """
+        Validate device group assignments
+        Modified to handle dry-run mode
+        """
+        issues = []
+        try:
+            # Handle dry-run mode
+            if self.config.sync_config.dry_run:
+                logging.debug("Skipping device group validation in dry-run mode")
+                issues.append({
+                    'type': 'dry_run',
+                    'message': 'Device group validation skipped in dry-run mode',
+                    'severity': 'info'
+                })
+                return issues
+
+            # Regular validation logic for non-dry-run mode
+            fm_groups = self.firemon.get_device_groups()
             nb_sites = self.netbrain.get_sites()
             
             # Check each site has corresponding group
@@ -66,57 +137,27 @@ class ValidationManager:
         self.validation_results['device_groups'] = issues
         return issues
 
-    def validate_configs(self) -> List[Dict[str, Any]]:
-        """Validate configuration imports"""
-        issues = []
-        try:
-            # Get all devices in both systems
-            nb_devices = self.netbrain.get_all_devices()
-            
-            for device in nb_devices:
-                fm_device = self.firemon.search_device(
-                    device['hostname'],
-                    device['mgmtIP']
-                )
-                
-                if fm_device:
-                    # Compare configuration timestamps
-                    nb_config_time = self.netbrain.get_device_config_time(device['id'])
-                    fm_config_time = self.firemon.get_device_revision(fm_device['id'])
-                    
-                    if nb_config_time and fm_config_time:
-                        nb_time = datetime.fromisoformat(nb_config_time.replace('Z', '+00:00'))
-                        fm_time = datetime.fromisoformat(fm_config_time['completeDate'])
-                        
-                        if nb_time > fm_time:
-                            issues.append({
-                                'type': 'outdated_config',
-                                'device': device['hostname'],
-                                'nb_time': nb_time,
-                                'fm_time': fm_time,
-                                'severity': 'warning'
-                            })
-
-        except Exception as e:
-            logging.error(f"Error validating configurations: {str(e)}")
-            issues.append({
-                'type': 'validation_error',
-                'message': str(e),
-                'severity': 'error'
-            })
-
-        self.validation_results['configs'] = issues
-        return issues
-
     def validate_licensing(self) -> List[Dict[str, Any]]:
-        """Validate device licensing status"""
+        """
+        Validate device licensing status
+        Modified to handle dry-run mode
+        """
         issues = []
         try:
-            # Get all devices from both systems
+            # Handle dry-run mode
+            if self.config.sync_config.dry_run:
+                logging.debug("Skipping license validation in dry-run mode")
+                issues.append({
+                    'type': 'dry_run',
+                    'message': 'License validation skipped in dry-run mode',
+                    'severity': 'info'
+                })
+                return issues
+
+            # Regular validation logic for non-dry-run mode
             nb_devices = self.netbrain.get_all_devices()
             fm_devices = self.firemon.get_all_devices()
             
-            # Check devices in FireMon but not in NetBrain
             fm_hostnames = {d['name'] for d in fm_devices}
             nb_hostnames = {d['hostname'] for d in nb_devices}
             
@@ -130,7 +171,6 @@ class ValidationManager:
                         'severity': 'warning'
                     })
             
-            # Check devices in NetBrain but not licensed in FireMon
             for hostname in nb_hostnames:
                 fm_device = next((d for d in fm_devices if d['name'] == hostname), None)
                 if fm_device and not any(product in fm_device.get('licenses', []) for product in ['SM', 'PO', 'PP']):
@@ -152,7 +192,10 @@ class ValidationManager:
         return issues
 
     def run_all_validations(self) -> Dict[str, List[Dict[str, Any]]]:
-        """Run all validation checks"""
+        """Run all validation checks with dry-run awareness"""
+        if self.config.sync_config.dry_run:
+            logging.info("Running validations in dry-run mode - API calls will be skipped")
+            
         self.validate_device_groups()
         self.validate_configs()
         self.validate_licensing()
@@ -165,7 +208,8 @@ class ValidationManager:
             'total_issues': 0,
             'error_count': 0,
             'warning_count': 0,
-            'categories': {}
+            'categories': {},
+            'dry_run': self.config.sync_config.dry_run
         }
         
         for category, issues in self.validation_results.items():
