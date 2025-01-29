@@ -265,12 +265,20 @@ class SyncManager:
                         })
 
     def _sync_configurations(self) -> None:
-        """Synchronize device configurations from NetBrain to FireMon"""
+        """
+        Synchronize device configurations from NetBrain to FireMon
+        Skip actual config checks and retrieval when in dry run mode for efficiency
+        """
         try:
             logging.info("Starting configuration synchronization")
             processed_count = 0
             error_count = 0
             
+            # If in dry run mode, log and return early
+            if self.config_manager.sync_config.dry_run:
+                logging.info("Dry run mode enabled - skipping configuration checks and updates")
+                return
+                
             # Get all NetBrain devices
             nb_devices = self.netbrain.get_all_devices()
             logging.debug(f"Retrieved {len(nb_devices)} devices from NetBrain")
@@ -287,8 +295,7 @@ class SyncManager:
                     
                     if not fm_device:
                         logging.debug(f"Device {device['hostname']} not found in FireMon")
-                        if not self.config_manager.sync_config.dry_run:
-                            self._create_device_in_firemon(device)
+                        self._create_device_in_firemon(device)
                         continue
 
                     # Compare config timestamps
@@ -299,13 +306,12 @@ class SyncManager:
                         if TimestampUtil.is_newer_than(nb_config_time, fm_config_time['completeDate']):
                             logging.debug(f"NetBrain has newer config for {device['hostname']}")
                             
-                            if not self.config_manager.sync_config.dry_run:
-                                try:
-                                    self._update_device_config(device, fm_device['id'])
-                                    processed_count += 1
-                                except Exception as e:
-                                    error_count += 1
-                                    logging.error(f"Error updating config for {device['hostname']}: {str(e)}")
+                            try:
+                                self._update_device_config(device, fm_device['id'])
+                                processed_count += 1
+                            except Exception as e:
+                                error_count += 1
+                                logging.error(f"Error updating config for {device['hostname']}: {str(e)}")
                         else:
                             logging.debug(f"FireMon config is current for {device['hostname']}")
 
@@ -325,7 +331,14 @@ class SyncManager:
             raise
 
     def _update_device_config(self, device: Dict[str, Any], fm_device_id: int) -> None:
-        """Update device configuration in FireMon"""
+        """
+        Update device configuration in FireMon
+        Only called when not in dry run mode
+        
+        Args:
+            device: Device dictionary with configuration data
+            fm_device_id: FireMon device ID
+        """
         try:
             # Get configurations from NetBrain
             configs = self.netbrain.get_device_configs(device['id'])
