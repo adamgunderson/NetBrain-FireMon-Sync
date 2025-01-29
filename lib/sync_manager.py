@@ -15,6 +15,8 @@ between NetBrain and FireMon systems. Key features include:
 
 import logging
 from typing import Dict, List, Any, Optional, Set
+import os
+import json
 from datetime import datetime
 from functools import lru_cache
 from threading import Lock
@@ -239,15 +241,18 @@ class SyncManager:
                 self.current_sync_start = datetime.utcnow()
 
                 # Get devices from both systems
+                logging.info("Retrieving devices from NetBrain and FireMon...")
                 nb_devices = self.netbrain.get_all_devices()
                 fm_devices = self.firemon.get_all_devices()
 
                 # Calculate device delta
+                logging.info("Calculating device delta...")
                 self.device_delta = self._calculate_device_delta(nb_devices, fm_devices)
 
                 if self.config_manager.sync_config.dry_run:
+                    logging.info("Running in dry-run mode - no changes will be made")
                     # In dry run mode, report the differences without making changes
-                    return {
+                    report = {
                         'timestamp': datetime.utcnow().isoformat(),
                         'sync_mode': self.config_manager.sync_config.sync_mode,
                         'dry_run': True,
@@ -269,48 +274,117 @@ class SyncManager:
                         'execution_time': (datetime.utcnow() - self.current_sync_start).total_seconds()
                     }
 
-                # For non-dry-run mode, proceed with actual sync
-                initial_validation = self.validator.run_all_validations() if self.validator else {}
+                else:
+                    # For non-dry-run mode, proceed with actual sync
+                    logging.info("Starting full synchronization...")
+                    
+                    # Run initial validation
+                    initial_validation = self.validator.run_all_validations() if self.validator else {}
+                    
+                    # Process devices in batches
+                    total_devices = len(nb_devices)
+                    batch_count = (total_devices + self.batch_size - 1) // self.batch_size
+                    
+                    logging.info(f"Processing {total_devices} devices in {batch_count} batches")
+                    
+                    for i in range(0, total_devices, self.batch_size):
+                        batch = nb_devices[i:i + self.batch_size]
+                        current_batch = (i // self.batch_size) + 1
+                        logging.info(f"Processing batch {current_batch} of {batch_count}")
+                        self._process_device_batch(batch)
 
-                # Process devices in batches
-                total_devices = len(nb_devices)
-                for i in range(0, total_devices, self.batch_size):
-                    batch = nb_devices[i:i + self.batch_size]
-                    self._process_device_batch(batch)
-                    logging.info(f"Completed batch {i//self.batch_size + 1} of "
-                               f"{(total_devices + self.batch_size - 1)//self.batch_size}")
+                    # Handle additional sync tasks based on configuration
+                    if self.config_manager.sync_config.enable_group_sync:
+                        logging.info("Starting group synchronization...")
+                        self._sync_groups_parallel()
 
-                # Handle additional sync tasks based on configuration
-                if self.config_manager.sync_config.enable_group_sync:
-                    self._sync_groups_parallel()
+                    if self.config_manager.sync_config.enable_config_sync:
+                        logging.info("Starting configuration synchronization...")
+                        self._sync_configs_parallel()
 
-                if self.config_manager.sync_config.enable_config_sync:
-                    self._sync_configs_parallel()
+                    if self.config_manager.sync_config.enable_license_sync:
+                        logging.info("Starting license synchronization...")
+                        self._sync_licenses_parallel()
 
-                if self.config_manager.sync_config.enable_license_sync:
-                    self._sync_licenses_parallel()
+                    # Final validation
+                    final_validation = self.validator.run_all_validations() if self.validator else {}
+                    self.last_sync_complete = datetime.utcnow()
 
-                # Final validation
-                final_validation = self.validator.run_all_validations() if self.validator else {}
-                self.last_sync_complete = datetime.utcnow()
+                    report = {
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'sync_mode': self.config_manager.sync_config.sync_mode,
+                        'summary': self._generate_summary(),
+                        'changes': self.changes,
+                        'validation': {
+                            'initial': initial_validation,
+                            'final': final_validation
+                        },
+                        'statistics': self._calculate_stats(),
+                        'dry_run': False,
+                        'execution_time': (self.last_sync_complete - self.current_sync_start).total_seconds()
+                    }
 
-                return {
-                    'timestamp': datetime.utcnow().isoformat(),
-                    'sync_mode': self.config_manager.sync_config.sync_mode,
-                    'summary': self._generate_summary(),
-                    'changes': self.changes,
-                    'validation': {
-                        'initial': initial_validation,
-                        'final': final_validation
-                    },
-                    'statistics': self._calculate_stats(),
-                    'dry_run': False,
-                    'execution_time': (self.last_sync_complete - self.current_sync_start).total_seconds()
-                }
+                # Save report to file
+                try:
+                    # Create reports directory
+                    report_dir = os.path.join(os.getcwd(), 'reports')
+                    os.makedirs(report_dir, exist_ok=True)
+
+                    # Generate report filename with timestamp
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    mode_suffix = 'dry_run' if self.config_manager.sync_config.dry_run else 'full'
+                    report_filename = f"sync_report_{timestamp}_{mode_suffix}.json"
+                    report_path = os.path.join(report_dir, report_filename)
+                    
+                    # Save JSON report
+                    with open(report_path, 'w') as f:
+                        json.dump(report, f, indent=2, default=str)
+                    logging.info(f"Report saved to {report_path}")
+
+                    # Generate and save HTML report if configured
+                    try:
+                        from .report import ReportManager
+                        report_manager = ReportManager(output_dir=report_dir)
+                        html_content = report_manager.generate_html_report(report)
+                        html_path = os.path.join(report_dir, f"sync_report_{timestamp}_{mode_suffix}.html")
+                        
+                        with open(html_path, 'w') as f:
+                            f.write(html_content)
+                        logging.info(f"HTML report saved to {html_path}")
+                    except Exception as e:
+                        logging.error(f"Error generating HTML report: {str(e)}")
+
+                except Exception as e:
+                    logging.error(f"Error saving report to file: {str(e)}")
+                    logging.error("Report will only be available in console output")
+
+                # Log completion message with summary
+                duration = (datetime.utcnow() - self.current_sync_start).total_seconds()
+                if self.config_manager.sync_config.dry_run:
+                    logging.info(f"Dry run completed in {duration:.2f} seconds")
+                    logging.info(f"Found {len(self.device_delta['different'])} devices with differences")
+                else:
+                    logging.info(f"Synchronization completed in {duration:.2f} seconds")
+                    logging.info(f"Processed {total_devices} devices")
+
+                return report
+
+        except SyncLockError as e:
+            error_msg = f"Could not acquire sync lock: {str(e)}"
+            logging.error(error_msg)
+            raise
 
         except Exception as e:
-            logging.error(f"Error during sync: {str(e)}")
+            error_msg = f"Error during sync: {str(e)}"
+            logging.error(error_msg, exc_info=True)
             raise
+
+        finally:
+            # Ensure resources are cleaned up
+            try:
+                self.clear_caches()
+            except Exception as cleanup_error:
+                logging.error(f"Error during cleanup: {str(cleanup_error)}")
 
     def _generate_summary(self) -> Dict[str, Any]:
         """Generate summary of sync operations"""
