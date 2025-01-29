@@ -1,11 +1,26 @@
 # lib/sync_manager.py
 
+"""
+Optimized Sync Manager for NetBrain to FireMon synchronization
+Key optimizations:
+- Parallel processing using ThreadPoolExecutor
+- Memory-efficient batch processing
+- Multi-level caching (in-memory and function-level)
+- Bulk data prefetching
+- Optimized API calls
+- Thread-safe operations
+"""
+
 import logging
-from typing import Dict, List, Any, Optional
+import concurrent.futures
+from typing import Dict, List, Any, Optional, Set
 from datetime import datetime
+from functools import lru_cache
+from threading import Lock
+from collections import defaultdict
 
 from .sync_lock import SyncLock, SyncLockError
-from .timestamp_utils import TimestampUtil  
+from .timestamp_utils import TimestampUtil
 from .config_handler import ConfigHandler, ConfigValidationError
 from .group_hierarchy import GroupHierarchyManager
 from .config_mapping import ConfigMappingManager
@@ -13,20 +28,41 @@ from .validation import ValidationManager
 
 class SyncManager:
     def __init__(self, netbrain_client, firemon_client, config_manager,
-                 group_manager=None, validation_manager=None):
-        """Initialize sync manager with required clients and managers"""
+                 group_manager=None, validation_manager=None, max_workers=3):
+        """
+        Initialize sync manager with enhanced performance capabilities
+        
+        Args:
+            netbrain_client: NetBrain API client
+            firemon_client: FireMon API client
+            config_manager: Configuration manager
+            group_manager: Group hierarchy manager (optional)
+            validation_manager: Validation manager (optional)
+            max_workers: Maximum number of worker threads (default: 3)
+        """
         self.netbrain = netbrain_client
         self.firemon = firemon_client
         self.config_manager = config_manager
         self.group_manager = group_manager or GroupHierarchyManager(firemon_client)
         self.validator = validation_manager
+        self.max_workers = max_workers
         
         # Initialize handlers
         self.config_handler = ConfigHandler(config_manager)
         self.config_mapping = ConfigMappingManager()
         self.sync_lock = SyncLock()
         
-        # Initialize change tracking
+        # Thread-safe caches with locks
+        self._cache_lock = Lock()
+        self._changes_lock = Lock()
+        self._device_cache = {}
+        self._group_cache = {}
+        self._config_cache = {}
+        
+        # Batch processing settings
+        self.batch_size = 50  # Configurable batch size
+        
+        # Change tracking
         self.changes = {
             'devices': [],
             'groups': [],
@@ -38,32 +74,39 @@ class SyncManager:
         self.last_sync_complete = None
 
     def run_sync(self) -> Dict[str, Any]:
-        """Run synchronization with proper locking"""
+        """
+        Run optimized synchronization with proper locking and parallel processing
+        
+        Returns:
+            Dictionary containing sync results and statistics
+        """
         try:
             with self.sync_lock.acquire(timeout=30):
-                logging.info(f"Starting synchronization in {self.config_manager.sync_config.sync_mode} mode")
+                logging.info(f"Starting optimized synchronization in {self.config_manager.sync_config.sync_mode} mode")
                 self.current_sync_start = datetime.utcnow()
 
-                # Ensure valid authentication
-                if not self.netbrain.validate_token():
-                    self.netbrain.authenticate()
-                if not self.firemon.validate_token():
-                    self.firemon.authenticate()
+                # Ensure valid authentication and prefetch data
+                self._ensure_authentication()
+                self._prefetch_data()
 
                 # Initial validation
                 initial_validation = self.validator.run_all_validations() if self.validator else {}
 
-                # Perform device sync if enabled
+                # Parallel device processing if enabled
                 if self.config_manager.sync_config.enable_device_sync:
-                    self._sync_devices()
+                    self._sync_devices_parallel()
 
-                # Perform other syncs based on mode
+                # Parallel group sync if enabled
                 if self.config_manager.sync_config.enable_group_sync:
-                    self._sync_device_groups()
+                    self._sync_groups_parallel()
+
+                # Parallel config sync if enabled
                 if self.config_manager.sync_config.enable_config_sync:
-                    self._sync_configurations()
+                    self._sync_configs_parallel()
+
+                # Parallel license sync if enabled
                 if self.config_manager.sync_config.enable_license_sync:
-                    self._sync_licenses()
+                    self._sync_licenses_parallel()
 
                 # Final validation
                 final_validation = self.validator.run_all_validations() if self.validator else {}
@@ -74,562 +117,310 @@ class SyncManager:
                     'changes': self.changes,
                     'final_state': final_validation,
                     'unmapped_device_types': self.get_unmapped_device_types(),
-                    'sync_duration': (self.last_sync_complete - self.current_sync_start).total_seconds()
+                    'sync_duration': (self.last_sync_complete - self.current_sync_start).total_seconds(),
+                    'statistics': self._calculate_stats()
                 }
 
         except Exception as e:
             logging.error(f"Error during sync: {str(e)}")
             raise
 
-    def _sync_devices(self) -> None:
-        """Synchronize devices between NetBrain and FireMon"""
+    def _ensure_authentication(self) -> None:
+        """Ensure valid authentication tokens"""
+        if not self.netbrain.validate_token():
+            self.netbrain.authenticate()
+        if not self.firemon.validate_token():
+            self.firemon.authenticate()
+
+    def _prefetch_data(self) -> None:
+        """Prefetch and cache frequently accessed data"""
+        logging.info("Prefetching data to optimize performance...")
         try:
-            logging.info("Starting device synchronization")
-            
-            # Get devices from both systems
-            nb_devices = self.netbrain.get_all_devices()
+            # Prefetch FireMon devices
             fm_devices = self.firemon.get_all_devices()
-            
-            # Create mappings for easier lookup
-            nb_device_map = {d['hostname']: d for d in nb_devices}
-            fm_device_map = {d['name']: d for d in fm_devices}
-            
-            # Find devices to add (in NetBrain but not in FireMon)
-            devices_to_add = set(nb_device_map.keys()) - set(fm_device_map.keys())
-            
-            # Find devices to remove (in FireMon but not in NetBrain)
-            devices_to_remove = set(fm_device_map.keys()) - set(nb_device_map.keys())
-            
-            # Process devices to add
-            for hostname in devices_to_add:
-                device = nb_device_map[hostname]
+            with self._cache_lock:
+                self._device_cache.update({
+                    d['name']: d for d in fm_devices
+                })
+
+            # Prefetch FireMon groups
+            fm_groups = self.firemon.get_device_groups()
+            with self._cache_lock:
+                self._group_cache.update({
+                    g['name']: g for g in fm_groups
+                })
+
+        except Exception as e:
+            logging.error(f"Error prefetching data: {str(e)}")
+            raise
+
+    def _sync_devices_parallel(self) -> None:
+        """Process devices in parallel using thread pool"""
+        try:
+            nb_devices = self.netbrain.get_all_devices()
+            total_devices = len(nb_devices)
+            logging.info(f"Processing {total_devices} devices in parallel batches")
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                # Process devices in batches
+                for i in range(0, total_devices, self.batch_size):
+                    batch = nb_devices[i:i + self.batch_size]
+                    futures = []
+                    
+                    for device in batch:
+                        futures.append(executor.submit(
+                            self._process_single_device, device
+                        ))
+                    
+                    # Wait for batch completion
+                    concurrent.futures.wait(futures)
+                    logging.info(f"Completed batch {i//self.batch_size + 1} of {(total_devices + self.batch_size - 1)//self.batch_size}")
+
+        except Exception as e:
+            logging.error(f"Error in parallel device sync: {str(e)}")
+            raise
+
+    @lru_cache(maxsize=1000)
+    def _get_device_configs(self, device_id: str) -> Dict[str, str]:
+        """Cached retrieval of device configurations"""
+        return self.netbrain.get_device_configs(device_id)
+
+    def _process_single_device(self, device: Dict[str, Any]) -> None:
+        """Process a single device with optimized API calls"""
+        try:
+            hostname = device['hostname']
+            # Use cached FireMon device data
+            fm_device = self._get_cached_firemon_device(hostname, device['mgmtIP'])
+
+            if not fm_device:
                 if not self.config_manager.sync_config.dry_run:
-                    try:
-                        new_device = self._create_device_in_firemon(device)
-                        if new_device:
-                            self.changes['devices'].append({
-                                'device': hostname,
-                                'action': 'add',
-                                'status': 'success'
-                            })
-                    except Exception as e:
-                        logging.error(f"Error creating device {hostname}: {str(e)}")
+                    self._create_device_with_configs(device)
+                else:
+                    with self._changes_lock:
                         self.changes['devices'].append({
                             'device': hostname,
                             'action': 'add',
-                            'status': 'error',
-                            'error': str(e)
+                            'status': 'dry_run'
                         })
-                else:
-                    # In dry run mode, just record what would be added
-                    self.changes['devices'].append({
-                        'device': hostname,
-                        'action': 'add',
-                        'status': 'dry_run',
-                        'details': {
-                            'mgmt_ip': device['mgmtIP'],
-                            'site': device.get('site'),
-                            'type': device['attributes'].get('subTypeName')
-                        }
-                    })
-            
-            # Process devices to remove if enabled
-            if self.config_manager.sync_config.remove_missing_devices:
-                for hostname in devices_to_remove:
-                    device = fm_device_map[hostname]
-                    if not self.config_manager.sync_config.dry_run:
-                        try:
-                            self.firemon.delete_device(device['id'])
-                            self.changes['devices'].append({
-                                'device': hostname,
-                                'action': 'remove',
-                                'status': 'success'
-                            })
-                        except Exception as e:
-                            logging.error(f"Error removing device {hostname}: {str(e)}")
-                            self.changes['devices'].append({
-                                'device': hostname,
-                                'action': 'remove',
-                                'status': 'error',
-                                'error': str(e)
-                            })
-                    else:
-                        # In dry run mode, just record what would be removed
-                        self.changes['devices'].append({
-                            'device': hostname,
-                            'action': 'remove',
-                            'status': 'dry_run',
-                            'details': {
-                                'id': device['id'],
-                                'mgmt_ip': device.get('managementIp')
-                            }
-                        })
-            
-            logging.info(f"Device sync summary - To Add: {len(devices_to_add)}, To Remove: {len(devices_to_remove)}")
-            
-        except Exception as e:
-            logging.error(f"Error syncing devices: {str(e)}")
-            raise
-
-    def _sync_device_groups(self) -> None:
-        """Synchronize device groups from NetBrain to FireMon"""
-        try:
-            logging.info("Starting device group synchronization")
-            
-            # Get NetBrain sites
-            nb_sites = self.netbrain.get_sites()
-            logging.debug(f"Retrieved {len(nb_sites)} sites from NetBrain")
-
-            # Build hierarchy
-            hierarchy = self.group_manager.build_group_hierarchy(nb_sites)
-            
-            # Get current FireMon groups for comparison
-            current_groups = {g['name']: g for g in self.firemon.get_device_groups()}
-            
-            for site in nb_sites:
-                try:
-                    self._process_site_hierarchy(site, hierarchy, current_groups)
-                except Exception as e:
-                    logging.error(f"Error processing site {site['sitePath']}: {str(e)}")
-                    self.changes['groups'].append({
-                        'site': site['sitePath'],
-                        'action': 'error',
-                        'error': str(e)
-                    })
-
-        except Exception as e:
-            logging.error(f"Error syncing device groups: {str(e)}")
-            raise
-
-    def _process_site_hierarchy(self, site: Dict[str, Any], hierarchy: Dict[str, Any], 
-                              current_groups: Dict[str, Any]) -> None:
-        """Process individual site for hierarchy sync"""
-        site_path = site['sitePath']
-        site_name = site_path.split('/')[-1]
-        
-        logging.debug(f"Processing site: {site_path}")
-        
-        if not self.config_manager.sync_config.dry_run:
-            if site_name not in current_groups:
-                # Create new group
-                group_data = {
-                    'name': site_name,
-                    'description': f'NetBrain site: {site_path}',
-                    'domainId': self.firemon.domain_id
-                }
-                
-                # Add parent relationship if not top level
-                parent_path = '/'.join(site_path.split('/')[:-1])
-                if parent_path:
-                    parent_name = parent_path.split('/')[-1]
-                    if parent_name in current_groups:
-                        group_data['parentId'] = current_groups[parent_name]['id']
-                
-                try:
-                    new_group = self.firemon.create_device_group(group_data)
-                    current_groups[site_name] = new_group
-                    self.changes['groups'].append({
-                        'site': site_path,
-                        'action': 'create',
-                        'status': 'success'
-                    })
-                except Exception as e:
-                    logging.error(f"Error creating group for site {site_path}: {str(e)}")
-                    self.changes['groups'].append({
-                        'site': site_path,
-                        'action': 'create',
-                        'status': 'error',
-                        'error': str(e)
-                    })
             else:
-                # Update existing group if needed
-                existing_group = current_groups[site_name]
-                updates_needed = self._check_group_updates(existing_group, site, hierarchy)
-                
-                if updates_needed:
-                    try:
-                        self.firemon.update_device_group(existing_group['id'], updates_needed)
-                        self.changes['groups'].append({
-                            'site': site_path,
-                            'action': 'update',
-                            'updates': list(updates_needed.keys()),
-                            'status': 'success'
-                        })
-                    except Exception as e:
-                        logging.error(f"Error updating group for site {site_path}: {str(e)}")
-                        self.changes['groups'].append({
-                            'site': site_path,
-                            'action': 'update',
-                            'status': 'error',
-                            'error': str(e)
-                        })
-
-    def _sync_configurations(self) -> None:
-        """
-        Synchronize device configurations from NetBrain to FireMon
-        Skip actual config checks and retrieval when in dry run mode for efficiency
-        """
-        try:
-            logging.info("Starting configuration synchronization")
-            processed_count = 0
-            error_count = 0
-            
-            # If in dry run mode, log and return early
-            if self.config_manager.sync_config.dry_run:
-                logging.info("Dry run mode enabled - skipping configuration checks and updates")
-                return
-                
-            # Get all NetBrain devices
-            nb_devices = self.netbrain.get_all_devices()
-            logging.debug(f"Retrieved {len(nb_devices)} devices from NetBrain")
-
-            for device in nb_devices:
-                try:
-                    logging.debug(f"Processing device: {device['hostname']}")
-                    
-                    # Check if device exists in FireMon
-                    fm_device = self.firemon.search_device(
-                        device['hostname'],
-                        device['mgmtIP']
-                    )
-                    
-                    if not fm_device:
-                        logging.debug(f"Device {device['hostname']} not found in FireMon")
-                        self._create_device_in_firemon(device)
-                        continue
-
-                    # Compare config timestamps
-                    nb_config_time = self.netbrain.get_device_config_time(device['id'])
-                    fm_config_time = self.firemon.get_device_revision(fm_device['id'])
-
-                    if nb_config_time and fm_config_time:
-                        if TimestampUtil.is_newer_than(nb_config_time, fm_config_time['completeDate']):
-                            logging.debug(f"NetBrain has newer config for {device['hostname']}")
-                            
-                            try:
-                                self._update_device_config(device, fm_device['id'])
-                                processed_count += 1
-                            except Exception as e:
-                                error_count += 1
-                                logging.error(f"Error updating config for {device['hostname']}: {str(e)}")
-                        else:
-                            logging.debug(f"FireMon config is current for {device['hostname']}")
-
-                except Exception as e:
-                    error_count += 1
-                    logging.error(f"Error processing device {device['hostname']}: {str(e)}")
-                    self.changes['configs'].append({
-                        'device': device['hostname'],
-                        'action': 'error',
-                        'error': str(e)
-                    })
-
-            logging.info(f"Configuration sync complete - Processed: {processed_count}, Errors: {error_count}")
+                self._update_device_if_needed(device, fm_device)
 
         except Exception as e:
-            logging.error(f"Error syncing configurations: {str(e)}")
-            raise
+            logging.error(f"Error processing device {device['hostname']}: {str(e)}")
+            with self._changes_lock:
+                self.changes['devices'].append({
+                    'device': device['hostname'],
+                    'action': 'error',
+                    'error': str(e)
+                })
 
-    def _update_device_config(self, device: Dict[str, Any], fm_device_id: int) -> None:
-        """
-        Update device configuration in FireMon
-        Only called when not in dry run mode
-        
-        Args:
-            device: Device dictionary with configuration data
-            fm_device_id: FireMon device ID
-        """
-        try:
-            # Get configurations from NetBrain
-            configs = self.netbrain.get_device_configs(device['id'])
-            
-            # Process and map configurations
-            mapped_configs = self.config_handler.process_device_configs(device, configs)
-            
-            # Backup existing configs before update
-            self.config_handler.backup_configs(device, mapped_configs)
-            
-            # Import to FireMon
-            self.firemon.import_device_config(
-                fm_device_id,
-                mapped_configs,
-                'NetBrain'
-            )
-            
-            self.changes['configs'].append({
-                'device': device['hostname'],
-                'action': 'update',
-                'status': 'success'
-            })
-            
-            logging.info(f"Successfully updated config for {device['hostname']}")
-            
-        except ConfigValidationError as e:
-            logging.error(f"Config validation error for {device['hostname']}: {str(e)}")
-            self.changes['configs'].append({
-                'device': device['hostname'],
-                'action': 'update',
-                'status': 'error',
-                'error': str(e)
-            })
-        except Exception as e:
-            raise ConfigValidationError(f"Error updating config: {str(e)}")
+    def _get_cached_firemon_device(self, hostname: str, mgmt_ip: str) -> Optional[Dict[str, Any]]:
+        """Get device from cache with thread safety"""
+        with self._cache_lock:
+            return self._device_cache.get(hostname)
 
-    def _create_device_in_firemon(self, device: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Create new device in FireMon"""
+    def _create_device_with_configs(self, device: Dict[str, Any]) -> None:
+        """Create new device with optimized config handling"""
         try:
             device_type = device['attributes']['subTypeName']
             device_pack = self.config_manager.get_device_pack(device_type)
-            
+
             if not device_pack:
-                logging.warning(f"No device pack mapping found for type: {device_type}")
-                return None
-                
+                logging.warning(f"No device pack mapping for type: {device_type}")
+                return
+
             collector_id = self.config_manager.get_collector_group_id(device['site'])
             if not collector_id:
-                logging.warning(f"No collector group found for site: {device['site']}")
-                return None
+                logging.warning(f"No collector group for site: {device['site']}")
+                return
 
-            # Get default settings
-            default_settings = self.config_manager.get_default_settings()
-            
-            # Override username if available in device attributes
-            if device['attributes'].get('login_alias'):
-                default_settings['username'] = device['attributes']['login_alias']
-
-            device_data = {
-                'name': device['hostname'],
-                'managementIp': device['mgmtIP'],
-                'description': f"{device['attributes'].get('vendor', '')} {device['attributes'].get('model', '')}",
-                'devicePack': {
-                    'artifactId': device_pack['artifact_id'],
-                    'groupId': device_pack['group_id'],
-                    'deviceType': device_pack['device_type'],
-                    'deviceName': device_pack['device_name']
-                },
-                'collectorGroupId': collector_id,
-                'domainId': self.firemon.domain_id,
-                'extendedSettingsJson': default_settings
-            }
-
+            # Create device in FireMon
+            device_data = self._prepare_device_data(device, device_pack, collector_id)
             new_device = self.firemon.create_device(device_data)
-            
-            # Process initial configuration and licensing
-            configs = self.netbrain.get_device_configs(device['id'])
-            if configs:
-                mapped_configs = self.config_handler.process_device_configs(device, configs)
-                self.firemon.import_device_config(new_device['id'], mapped_configs, 'NetBrain')
 
-            # License the device
-            self.firemon.manage_device_license(new_device['id'], add=True)
-            
-            # Update group membership
-            if device.get('site'):
-                self._update_device_group_membership(new_device['id'], device['site'])
+            # Handle configs and licensing in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                config_future = executor.submit(self._handle_device_configs, device, new_device['id'])
+                license_future = executor.submit(self._handle_device_licensing, new_device['id'])
                 
-            self.changes['devices'].append({
-                'device': device['hostname'],
-                'action': 'create',
-                'status': 'success'
-            })
-            
-            logging.info(f"Successfully created device {device['hostname']} in FireMon")
-            return new_device
-            
+                concurrent.futures.wait([config_future, license_future])
+
+            # Update cache
+            with self._cache_lock:
+                self._device_cache[device['hostname']] = new_device
+
+            with self._changes_lock:
+                self.changes['devices'].append({
+                    'device': device['hostname'],
+                    'action': 'add',
+                    'status': 'success'
+                })
+
         except Exception as e:
             logging.error(f"Error creating device {device['hostname']}: {str(e)}")
-            self.changes['devices'].append({
-                'device': device['hostname'],
-                'action': 'create',
-                'status': 'error',
-                'error': str(e)
-            })
-            return None
-
-    def _sync_licenses(self) -> None:
-        """Synchronize device licenses between NetBrain and FireMon"""
-        try:
-            logging.info("Starting license synchronization")
-            
-            # Get devices from both systems
-            nb_devices = self.netbrain.get_all_devices()
-            fm_devices = self.firemon.get_all_devices()
-            
-            nb_hostnames = {d['hostname'] for d in nb_devices}
-            fm_hostnames = {d['name'] for d in fm_devices}
-            
-            # Track sync statistics
-            license_added = 0
-            license_removed = 0
-            errors = 0
-            
-            # Process devices needing licenses
-            for device in nb_devices:
-                if device['hostname'] in fm_hostnames:
-                    fm_device = next(d for d in fm_devices if d['name'] == device['hostname'])
-                    if not any(product in fm_device.get('licenses', []) 
-                             for product in ['SM', 'PO', 'PP']):
-                        try:
-                            if not self.config_manager.sync_config.dry_run:
-                                self.firemon.manage_device_license(fm_device['id'], add=True)
-                                self.changes['licenses'].append({
-                                    'device': device['hostname'],
-                                    'action': 'add',
-                                    'status': 'success'
-                                })
-                                license_added += 1
-                            else:
-                                self.changes['licenses'].append({
-                                    'device': device['hostname'],
-                                    'action': 'add',
-                                    'status': 'dry_run'
-                                })
-                        except Exception as e:
-                            errors += 1
-                            logging.error(f"Error adding license for {device['hostname']}: {str(e)}")
-                            self.changes['licenses'].append({
-                                'device': device['hostname'],
-                                'action': 'add',
-                                'status': 'error',
-                                'error': str(e)
-                            })
-            
-            # Handle devices not in NetBrain
-            if self.config_manager.sync_config.unlicense_removed_devices:
-                for device in fm_devices:
-                    if device['name'] not in nb_hostnames:
-                        if any(product in device.get('licenses', []) 
-                              for product in ['SM', 'PO', 'PP']):
-                            try:
-                                if not self.config_manager.sync_config.dry_run:
-                                    self.firemon.manage_device_license(device['id'], add=False)
-                                    self.changes['licenses'].append({
-                                        'device': device['name'],
-                                        'action': 'remove',
-                                        'status': 'success'
-                                    })
-                                    license_removed += 1
-                                else:
-                                    self.changes['licenses'].append({
-                                        'device': device['name'],
-                                        'action': 'remove',
-                                        'status': 'dry_run'
-                                    })
-                            except Exception as e:
-                                errors += 1
-                                logging.error(f"Error removing license from {device['name']}: {str(e)}")
-                                self.changes['licenses'].append({
-                                    'device': device['name'],
-                                    'action': 'remove',
-                                    'status': 'error',
-                                    'error': str(e)
-                                })
-
-            logging.info(f"License sync complete - Added: {license_added}, Removed: {license_removed}, Errors: {errors}")
-
-        except Exception as e:
-            logging.error(f"Error syncing licenses: {str(e)}")
             raise
 
-    def _update_device_group_membership(self, device_id: int, site_path: str) -> None:
-        """Update device group membership based on site path"""
+    def _prepare_device_data(self, device: Dict[str, Any], device_pack: Dict[str, Any], 
+                           collector_id: str) -> Dict[str, Any]:
+        """Prepare device data for creation"""
+        default_settings = self.config_manager.get_default_settings()
+        if device['attributes'].get('login_alias'):
+            default_settings['username'] = device['attributes']['login_alias']
+
+        return {
+            'name': device['hostname'],
+            'managementIp': device['mgmtIP'],
+            'description': f"{device['attributes'].get('vendor', '')} {device['attributes'].get('model', '')}",
+            'devicePack': {
+                'artifactId': device_pack['artifact_id'],
+                'groupId': device_pack['group_id'],
+                'deviceType': device_pack['device_type'],
+                'deviceName': device_pack['device_name']
+            },
+            'collectorGroupId': collector_id,
+            'domainId': self.firemon.domain_id,
+            'extendedSettingsJson': default_settings
+        }
+
+    def _handle_device_configs(self, device: Dict[str, Any], device_id: int) -> None:
+        """Handle device configuration import"""
         try:
-            logging.debug(f"Updating group membership for device {device_id} to site {site_path}")
-            
-            # Get current and target groups
-            current_groups = set()
-            target_groups = set()
-            
-            fm_device_groups = self.firemon.get_device_groups(device_id)
-            current_groups = {g['id'] for g in fm_device_groups}
-            
-            # Build target groups from site path
-            path_parts = site_path.split('/')
-            current_path = ''
-            
-            for part in path_parts:
-                if current_path:
-                    current_path += '/'
-                current_path += part
-                
-                group = self.group_manager.get_group_by_path(current_path)
-                if group:
-                    target_groups.add(group['id'])
-            
-            # Calculate group changes
-            groups_to_add = target_groups - current_groups
-            groups_to_remove = current_groups - target_groups
-            
-            if not self.config_manager.sync_config.dry_run:
-                # Add to new groups
-                for group_id in groups_to_add:
-                    try:
-                        self.firemon.add_device_to_group(group_id, device_id)
-                        logging.debug(f"Added device {device_id} to group {group_id}")
-                    except Exception as e:
-                        logging.error(f"Error adding device {device_id} to group {group_id}: {str(e)}")
-                
-                # Remove from old groups
-                for group_id in groups_to_remove:
-                    try:
-                        self.firemon.remove_device_from_group(group_id, device_id)
-                        logging.debug(f"Removed device {device_id} from group {group_id}")
-                    except Exception as e:
-                        logging.error(f"Error removing device {device_id} from group {group_id}: {str(e)}")
-            
-            self.changes['groups'].append({
-                'device_id': device_id,
-                'action': 'membership_update',
-                'added_groups': len(groups_to_add),
-                'removed_groups': len(groups_to_remove),
-                'status': 'dry_run' if self.config_manager.sync_config.dry_run else 'success'
-            })
+            configs = self._get_device_configs(device['id'])
+            if configs:
+                mapped_configs = self.config_handler.process_device_configs(device, configs)
+                self.firemon.import_device_config(device_id, mapped_configs, 'NetBrain')
+        except Exception as e:
+            logging.error(f"Error handling configs for {device['hostname']}: {str(e)}")
+            raise
+
+    def _handle_device_licensing(self, device_id: int) -> None:
+        """Handle device licensing"""
+        try:
+            self.firemon.manage_device_license(device_id, add=True)
+        except Exception as e:
+            logging.error(f"Error handling licensing for device {device_id}: {str(e)}")
+            raise
+
+    def _sync_groups_parallel(self) -> None:
+        """Parallel processing of group hierarchy"""
+        try:
+            nb_sites = self.netbrain.get_sites()
+            hierarchy = self.group_manager.build_group_hierarchy(nb_sites)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = []
+                for site in nb_sites:
+                    futures.append(executor.submit(
+                        self._process_site_hierarchy, site, hierarchy
+                    ))
+                concurrent.futures.wait(futures)
 
         except Exception as e:
-            logging.error(f"Error updating group membership for device {device_id}: {str(e)}")
-            self.changes['groups'].append({
-                'device_id': device_id,
-                'action': 'membership_update',
-                'status': 'error',
-                'error': str(e)
-            })
+            logging.error(f"Error in parallel group sync: {str(e)}")
+            raise
 
-    def _check_group_updates(self, existing_group: Dict[str, Any], site: Dict[str, Any], 
-                           hierarchy: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Check if group needs updates"""
-        updates = {}
-        site_path = site['sitePath']
-        
-        # Check description
-        expected_description = f'NetBrain site: {site_path}'
-        if existing_group.get('description') != expected_description:
-            updates['description'] = expected_description
-            
-        # Check parent relationship
-        parent_path = '/'.join(site_path.split('/')[:-1])
-        if parent_path:
-            parent_node = hierarchy.get(parent_path)
-            if parent_node and parent_node.get('id') != existing_group.get('parentId'):
-                updates['parentId'] = parent_node['id']
-                
-        return updates if updates else None
+    def _sync_configs_parallel(self) -> None:
+        """Parallel processing of device configurations"""
+        if self.config_manager.sync_config.dry_run:
+            logging.info("Skipping config sync in dry run mode")
+            return
+
+        try:
+            nb_devices = self.netbrain.get_all_devices()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = []
+                for device in nb_devices:
+                    futures.append(executor.submit(
+                        self._process_device_configs, device
+                    ))
+                concurrent.futures.wait(futures)
+
+        except Exception as e:
+            logging.error(f"Error in parallel config sync: {str(e)}")
+            raise
+
+    def _sync_licenses_parallel(self) -> None:
+        """Parallel processing of device licensing"""
+        try:
+            nb_devices = self.netbrain.get_all_devices()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = []
+                for device in nb_devices:
+                    futures.append(executor.submit(
+                        self._process_device_licensing, device
+                    ))
+                concurrent.futures.wait(futures)
+
+        except Exception as e:
+            logging.error(f"Error in parallel license sync: {str(e)}")
+            raise
+
+    def _calculate_stats(self) -> Dict[str, Any]:
+        """Calculate detailed sync statistics"""
+        return {
+            'devices': {
+                'total': len(self.changes['devices']),
+                'successful': sum(1 for d in self.changes['devices'] if d['status'] == 'success'),
+                'errors': sum(1 for d in self.changes['devices'] if d['status'] == 'error')
+            },
+            'groups': {
+                'total': len(self.changes['groups']),
+                'successful': sum(1 for g in self.changes['groups'] if g['status'] == 'success'),
+                'errors': sum(1 for g in self.changes['groups'] if g['status'] == 'error')
+            },
+            'cache': {
+                'devices': len(self._device_cache),
+                'groups': len(self._group_cache),
+                'configs': len(self._config_cache)
+            },
+            'timing': {
+                'start': self.current_sync_start.isoformat() if self.current_sync_start else None,
+                'end': self.last_sync_complete.isoformat() if self.last_sync_complete else None
+            }
+        }
+
+    def clear_caches(self) -> None:
+        """Clear all caches with thread safety"""
+        with self._cache_lock:
+            self._device_cache.clear()
+            self._group_cache.clear()
+            self._config_cache.clear()
+            self._get_device_configs.cache_clear()
+        logging.info("All caches cleared")
 
     def get_unmapped_device_types(self) -> Dict[str, int]:
         """Get summary of device types without mappings"""
         unmapped = {}
         try:
             nb_devices = self.netbrain.get_all_devices()
-            for device in nb_devices:
-                device_type = device.get('attributes', {}).get('subTypeName')
-                if device_type and not self.config_mapping.get_device_type_mapping(device_type):
-                    unmapped[device_type] = unmapped.get(device_type, 0) + 1
-                    logging.warning(f"No device pack mapping found for type: {device_type}")
+            device_types = defaultdict(int)
+            
+            # Count device types in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                def count_device_type(device):
+                    device_type = device.get('attributes', {}).get('subTypeName')
+                    if device_type and not self.config_mapping.get_device_type_mapping(device_type):
+                        return device_type
+                    return None
+
+                futures = [executor.submit(count_device_type, device) for device in nb_devices]
+                for future in concurrent.futures.as_completed(futures):
+                    device_type = future.result()
+                    if device_type:
+                        with self._changes_lock:
+                            device_types[device_type] += 1
+
+            unmapped = dict(device_types)
+            if unmapped:
+                logging.warning(f"Found {len(unmapped)} unmapped device types")
+                
         except Exception as e:
             logging.error(f"Error getting unmapped device types: {str(e)}")
+            
         return unmapped
 
     def get_sync_status(self) -> Dict[str, Any]:
-        """Get current sync status and statistics"""
+        """Get current sync status and statistics with enhanced metrics"""
         status = {
             'running': self.sync_lock.is_locked(),
             'lock_info': self.sync_lock.get_lock_info() if self.sync_lock.is_locked() else None,
@@ -664,6 +455,17 @@ class SyncManager:
                                  if l.get('status') == 'success'),
                     'errors': sum(1 for l in self.changes.get('licenses', []) 
                                 if l.get('status') == 'error')
+                },
+                'performance': {
+                    'cache_stats': {
+                        'device_cache_size': len(self._device_cache),
+                        'group_cache_size': len(self._group_cache),
+                        'config_cache_size': len(self._config_cache)
+                    },
+                    'batch_stats': {
+                        'batch_size': self.batch_size,
+                        'max_workers': self.max_workers
+                    }
                 }
             }
         }
@@ -673,14 +475,118 @@ class SyncManager:
             
         return status
 
-    def clear_changes(self) -> None:
-        """Clear tracked changes"""
-        self.changes = {
-            'devices': [],
-            'groups': [],
-            'configs': [],
-            'licenses': []
-        }
+    def _update_device_if_needed(self, nb_device: Dict[str, Any], 
+                               fm_device: Dict[str, Any]) -> None:
+        """Update device if changes detected"""
+        try:
+            updates_needed = self._check_device_updates(nb_device, fm_device)
+            
+            if not updates_needed:
+                return
+                
+            if not self.config_manager.sync_config.dry_run:
+                # Process updates in parallel
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                    futures = []
+                    
+                    if 'config' in updates_needed:
+                        futures.append(executor.submit(
+                            self._update_device_config, nb_device, fm_device['id']
+                        ))
+                        
+                    if 'group' in updates_needed:
+                        futures.append(executor.submit(
+                            self._update_device_group_membership, 
+                            fm_device['id'], 
+                            nb_device['site']
+                        ))
+                        
+                    if 'license' in updates_needed:
+                        futures.append(executor.submit(
+                            self._update_device_licensing,
+                            fm_device['id'],
+                            updates_needed['license']
+                        ))
+                        
+                    concurrent.futures.wait(futures)
+                    
+                with self._changes_lock:
+                    self.changes['devices'].append({
+                        'device': nb_device['hostname'],
+                        'action': 'update',
+                        'updates': list(updates_needed.keys()),
+                        'status': 'success'
+                    })
+            else:
+                with self._changes_lock:
+                    self.changes['devices'].append({
+                        'device': nb_device['hostname'],
+                        'action': 'update',
+                        'updates': list(updates_needed.keys()),
+                        'status': 'dry_run'
+                    })
+                    
+        except Exception as e:
+            logging.error(f"Error updating device {nb_device['hostname']}: {str(e)}")
+            with self._changes_lock:
+                self.changes['devices'].append({
+                    'device': nb_device['hostname'],
+                    'action': 'update',
+                    'status': 'error',
+                    'error': str(e)
+                })
+
+    def _check_device_updates(self, nb_device: Dict[str, Any], 
+                            fm_device: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Check what device aspects need updating"""
+        updates = {}
+        
+        # Check configuration
+        if self.config_manager.sync_config.enable_config_sync:
+            nb_config_time = self.netbrain.get_device_config_time(nb_device['id'])
+            fm_config_time = self.firemon.get_device_revision(fm_device['id'])
+            
+            if nb_config_time and fm_config_time:
+                if TimestampUtil.is_newer_than(nb_config_time, fm_config_time['completeDate']):
+                    updates['config'] = True
+        
+        # Check group membership
+        if self.config_manager.sync_config.enable_group_sync:
+            current_groups = set(g['id'] for g in self.firemon.get_device_groups(fm_device['id']))
+            target_groups = self._get_target_groups(nb_device['site'])
+            
+            if current_groups != target_groups:
+                updates['group'] = {'add': target_groups - current_groups,
+                                  'remove': current_groups - target_groups}
+        
+        # Check licensing
+        if self.config_manager.sync_config.enable_license_sync:
+            current_licenses = set(fm_device.get('licenses', []))
+            required_licenses = {'SM', 'PO', 'PP'}
+            
+            missing_licenses = required_licenses - current_licenses
+            if missing_licenses:
+                updates['license'] = {'add': missing_licenses}
+        
+        return updates if updates else None
+
+    def _get_target_groups(self, site_path: str) -> Set[int]:
+        """Get target group IDs for a site path"""
+        target_groups = set()
+        path_parts = site_path.split('/')
+        current_path = ''
+        
+        for part in path_parts:
+            if current_path:
+                current_path += '/'
+            current_path += part
+            
+            with self._cache_lock:
+                group = self._group_cache.get(part)
+                if group:
+                    target_groups.add(group['id'])
+        
+        return target_groups
 
     def shutdown(self) -> None:
         """Clean shutdown of sync manager"""
@@ -688,6 +594,7 @@ class SyncManager:
         try:
             if self.sync_lock.is_locked():
                 self.sync_lock.break_lock()
+            self.clear_caches()
             logging.info("Sync manager shutdown complete")
         except Exception as e:
             logging.error(f"Error during sync manager shutdown: {str(e)}")
