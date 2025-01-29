@@ -1,5 +1,4 @@
 # lib/logger.py
-
 """
 Logging configuration module
 Handles setup of application logging with support for:
@@ -113,25 +112,14 @@ def log_device_details(devices: list) -> None:
         devices: List of device dictionaries
     """
     if debug_logger.handlers:
-        debug_logger.debug("\n=== Device Details ===")
         for device in devices:
             attrs = device.get('attributes', {})
             debug_logger.debug(
-                f"Device: {device.get('hostname', 'N/A')}\n"
-                f"  ID: {device.get('id', 'N/A')}\n"
-                f"  Management IP: {device.get('mgmtIP', 'N/A')}\n"
-                f"  Site: {device.get('site', 'N/A')}\n"
-                f"  Management Interface: {attrs.get('mgmtIntf', 'N/A')}\n"
-                f"  Type: {attrs.get('subTypeName', 'N/A')}\n"
-                f"  Model: {attrs.get('model', 'N/A')}\n"
-                f"  Vendor: {attrs.get('vendor', 'N/A')}\n"
-                f"  Version: {attrs.get('version', 'N/A')}\n"
-                f"  Serial Number: {attrs.get('serialNumber', 'N/A')}\n"
-                f"  Location: {attrs.get('location', 'N/A')}\n"
-                f"  Contact: {attrs.get('contact', 'N/A')}\n"
-                f"  Login Alias: {attrs.get('login_alias', 'N/A')}\n"
-                f"  Last Discovery: {attrs.get('lastDiscoveryTime', 'N/A')}\n"
-                "  " + "="*40
+                f"Device: {device.get('hostname', 'N/A')} "
+                f"ID: {device.get('id', 'N/A')} "
+                f"IP: {device.get('mgmtIP', 'N/A')} "
+                f"Site: {device.get('site', 'N/A')} "
+                f"Type: {attrs.get('subTypeName', 'N/A')}"
             )
 
 def log_group_details(groups: list) -> None:
@@ -142,12 +130,9 @@ def log_group_details(groups: list) -> None:
         groups: List of group dictionaries
     """
     if debug_logger.handlers:
-        debug_logger.debug("\n=== Group Details ===")
         for group in groups:
             debug_logger.debug(
-                f"Group: {group.get('name', 'N/A')}\n"
-                f"  ID: {group.get('id', 'N/A')}\n"
-                f"  Parent ID: {group.get('parentId', 'N/A')}\n"
-                f"  Description: {group.get('description', 'N/A')}\n"
-                "  " + "="*40
+                f"Group: {group.get('name', 'N/A')} "
+                f"ID: {group.get('id', 'N/A')} "
+                f"Parent: {group.get('parentId', 'N/A')}"
             )

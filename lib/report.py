@@ -52,10 +52,11 @@ class ReportManager:
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
     def generate_sync_report(self, 
-                           changes: Dict[str, Any],
-                           validation_results: Dict[str, Any],
-                           sync_mode: str,
-                           delta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                            changes: Dict[str, Any],
+                            validation_results: Dict[str, Any],
+                            sync_mode: str,
+                            delta: Optional[Dict[str, Any]] = None,
+                            dry_run: bool = False) -> Dict[str, Any]:
         """
         Generate comprehensive sync report
         
@@ -64,21 +65,30 @@ class ReportManager:
             validation_results: Dictionary of validation results
             sync_mode: Sync mode (full, groups, etc.)
             delta: Optional device delta information
-            
+            dry_run: Whether running in dry run mode
+                
         Returns:
             Dictionary containing complete report
         """
         report = {
             'timestamp': datetime.utcnow().isoformat(),
             'sync_mode': sync_mode,
+            'dry_run': dry_run,
             'summary': self._generate_summary(changes, validation_results, delta),
             'changes': changes,
             'validation': validation_results
         }
         
-        if delta:
+        if dry_run and delta:
+            # For dry run mode, include delta information
             report['delta'] = delta
-            
+            report['summary']['delta'] = {
+                'only_in_netbrain': len(delta.get('only_in_netbrain', [])),
+                'only_in_firemon': len(delta.get('only_in_firemon', [])),
+                'matching': len(delta.get('matching', [])),
+                'different': len(delta.get('different', []))
+            }
+        
         # Add license analysis if appropriate
         if sync_mode in ['full', 'licenses']:
             report['license_analysis'] = self._analyze_license_requirements(changes)

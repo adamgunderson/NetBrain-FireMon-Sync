@@ -120,8 +120,8 @@ class ConfigManager:
         Get FireMon collector group ID for a NetBrain site
         
         Args:
-            site: Site path (e.g., "My Network/NA/DC1")
-            
+            site: Site path (e.g., "NA/DC1" or "My Network/NA/DC1")
+                
         Returns:
             Collector group ID or None if not found
         """
@@ -129,13 +129,17 @@ class ConfigManager:
             logging.warning("Empty site path provided")
             return None
 
-        # Extract top-level site code (e.g., NA, EU, CN)
+        # Remove "My Network" prefix if present
+        if site.startswith("My Network/"):
+            site = site[len("My Network/"):]
+        
+        # Extract top-level site code
         site_parts = site.split('/')
-        if len(site_parts) < 2:
+        if not site_parts:
             logging.warning(f"Invalid site path format: {site}")
             return None
 
-        site_code = site_parts[1].upper()  # Skip "My Network" and use next level
+        site_code = site_parts[0].upper()
         collector_id = self.mappings.get('collector_mapping', {}).get(site_code)
         
         if not collector_id:
