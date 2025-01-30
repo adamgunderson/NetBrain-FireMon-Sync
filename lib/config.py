@@ -156,38 +156,52 @@ class ConfigManager:
         Get device pack configuration based on device attributes
         
         Args:
-            device_type: NetBrain device type
-            model: Device model string
-            vendor: NetBrain vendor name
+            device_type: NetBrain device type (e.g. "Palo Alto Firewall") 
+            model: Device model string (e.g. "PA-850")
+            vendor: NetBrain vendor name (e.g. "Palo Alto Networks")
             
         Returns:
             Device pack configuration or None if no match found
         """
-        device_packs = self.mappings.get('device_pack_mapping', {})
-        device_pack = device_packs.get(device_type)
-        
-        if not device_pack:
-            logging.warning(f"No device pack mapping found for device type: {device_type}")
-            return None
+        try:
+            device_packs = self.mappings.get('device_pack_mapping', {})
+            device_pack = device_packs.get(device_type)
             
-        # Verify vendor match
-        if device_pack.get('nb_vendor') != vendor:
-            logging.warning(f"Vendor mismatch for device type {device_type}: "
-                          f"expected {device_pack.get('nb_vendor')}, got {vendor}")
-            return None
-            
-        # If no model patterns defined, just return the device pack
-        if 'model_patterns' not in device_pack:
-            return device_pack
-            
-        # Check if model matches any of the defined patterns
-        for pattern in device_pack['model_patterns']:
-            if re.match(pattern, model):
-                logging.debug(f"Model {model} matches pattern {pattern} for device type {device_type}")
+            if not device_pack:
+                # Add debug logging to help troubleshoot matches
+                logging.debug(f"Device pack lookup for type={device_type}, model={model}, vendor={vendor}")
+                logging.debug(f"Available device pack mappings: {list(device_packs.keys())}")
+                logging.warning(f"No device pack mapping found for device type: {device_type}")
+                return None
+                
+            # Verify vendor match with case-insensitive comparison
+            if device_pack.get('nb_vendor', '').lower() != vendor.lower():
+                logging.warning(f"Vendor mismatch for device type {device_type}: "
+                              f"expected {device_pack.get('nb_vendor')}, got {vendor}")
+                return None
+                
+            # If no model patterns defined, just return the device pack
+            if 'model_patterns' not in device_pack:
+                logging.debug(f"No model patterns defined for {device_type}, considering it a match")
                 return device_pack
                 
-        logging.warning(f"Model {model} does not match any patterns for device type {device_type}")
-        return None
+            # Check if model matches any of the defined patterns
+            for pattern in device_pack['model_patterns']:
+                try:
+                    if re.match(pattern, model, re.IGNORECASE):
+                        logging.debug(f"Model {model} matches pattern {pattern} for device type {device_type}")
+                        return device_pack
+                except re.error as e:
+                    logging.error(f"Invalid regex pattern '{pattern}' for device type {device_type}: {str(e)}")
+                    continue
+                    
+            logging.warning(f"Model {model} does not match any patterns for device type {device_type}")
+            logging.debug(f"Available patterns: {device_pack['model_patterns']}")
+            return None
+
+        except Exception as e:
+            logging.error(f"Error in device pack lookup: {str(e)}")
+            return None
 
     def get_expected_firemon_vendor(self, netbrain_vendor: str) -> Optional[str]:
         """
