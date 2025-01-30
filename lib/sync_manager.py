@@ -215,12 +215,12 @@ class SyncManager:
 
         # Compare additional attributes
         nb_vendor = nb_device['attributes'].get('vendor', 'N/A')
-        fm_vendor = fm_device.get('vendor', 'N/A')
+        fm_vendor = fm_device.get('devicePack', {}).get('vendor', 'N/A')
         if nb_vendor != fm_vendor:
             differences.append(f"Vendor mismatch: NB={nb_vendor}, FM={fm_vendor}")
 
         nb_model = nb_device['attributes'].get('model', 'N/A')
-        fm_model = fm_device.get('model', 'N/A')
+        fm_model = fm_device.get('devicePack', {}).get('model', 'N/A')
         if nb_model != fm_model:
             differences.append(f"Model mismatch: NB={nb_model}, FM={fm_model}")
 

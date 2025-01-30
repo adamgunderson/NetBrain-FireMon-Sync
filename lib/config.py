@@ -120,7 +120,7 @@ class ConfigManager:
         Get FireMon collector group ID for a NetBrain site
         
         Args:
-            site: Site path (e.g., "NA/DC1" or "My Network\NA\DC1")
+            site: Site path (e.g., "NA/DC1")
                 
         Returns:
             Collector group ID or None if not found
