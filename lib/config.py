@@ -6,6 +6,7 @@ Handles loading and validation of configuration from environment variables
 
 from dataclasses import dataclass
 import os
+import re
 import yaml
 import logging
 from typing import Dict, List, Any, Optional, Set
@@ -149,6 +150,59 @@ class ConfigManager:
             logging.warning(f"No collector mapping found for site code: {site_code}")
         
         return collector_id
+
+    def get_device_pack_by_attributes(self, device_type: str, model: str, vendor: str) -> Optional[Dict[str, Any]]:
+        """
+        Get device pack configuration based on device attributes
+        
+        Args:
+            device_type: NetBrain device type
+            model: Device model string
+            vendor: NetBrain vendor name
+            
+        Returns:
+            Device pack configuration or None if no match found
+        """
+        device_packs = self.mappings.get('device_pack_mapping', {})
+        device_pack = device_packs.get(device_type)
+        
+        if not device_pack:
+            logging.warning(f"No device pack mapping found for device type: {device_type}")
+            return None
+            
+        # Verify vendor match
+        if device_pack.get('nb_vendor') != vendor:
+            logging.warning(f"Vendor mismatch for device type {device_type}: "
+                          f"expected {device_pack.get('nb_vendor')}, got {vendor}")
+            return None
+            
+        # If no model patterns defined, just return the device pack
+        if 'model_patterns' not in device_pack:
+            return device_pack
+            
+        # Check if model matches any of the defined patterns
+        for pattern in device_pack['model_patterns']:
+            if re.match(pattern, model):
+                logging.debug(f"Model {model} matches pattern {pattern} for device type {device_type}")
+                return device_pack
+                
+        logging.warning(f"Model {model} does not match any patterns for device type {device_type}")
+        return None
+
+    def get_expected_firemon_vendor(self, netbrain_vendor: str) -> Optional[str]:
+        """
+        Get expected FireMon vendor name for a NetBrain vendor
+        
+        Args:
+            netbrain_vendor: Vendor name from NetBrain
+            
+        Returns:
+            Expected FireMon vendor name or None if not found
+        """
+        for device_pack in self.mappings.get('device_pack_mapping', {}).values():
+            if device_pack.get('nb_vendor') == netbrain_vendor:
+                return device_pack.get('fm_vendor')
+        return None
 
     def get_device_pack(self, device_type: str) -> Optional[Dict[str, Any]]:
         """
@@ -310,7 +364,10 @@ class ConfigManager:
         # Validate device pack mappings
         device_packs = self.mappings.get('device_pack_mapping', {})
         for device_type, pack in device_packs.items():
-            required_fields = ['artifact_id', 'group_id', 'device_type', 'device_name']
+            required_fields = [
+                'artifact_id', 'group_id', 'device_type', 'device_name',
+                'nb_vendor', 'fm_vendor', 'model_patterns'
+            ]
             
             for field in required_fields:
                 if field not in pack:
@@ -330,6 +387,39 @@ class ConfigManager:
                     'field': 'device_type',
                     'value': pack.get('device_type'),
                     'valid_values': list(valid_device_types),
+                    'severity': 'error'
+                })
+
+            # Validate model patterns
+            if 'model_patterns' in pack:
+                if not isinstance(pack['model_patterns'], list):
+                    issues.append({
+                        'type': 'invalid_value',
+                        'device_type': device_type,
+                        'field': 'model_patterns',
+                        'value': type(pack['model_patterns']).__name__,
+                        'expected': 'list',
+                        'severity': 'error'
+                    })
+                else:
+                    # Validate each pattern is a valid regex
+                    for pattern in pack['model_patterns']:
+                        try:
+                            re.compile(pattern)
+                        except re.error:
+                            issues.append({
+                                'type': 'invalid_regex',
+                                'device_type': device_type,
+                                'pattern': pattern,
+                                'severity': 'error'
+                            })
+
+        # Validate vendor mappings
+        for device_type, pack in device_packs.items():
+            if 'nb_vendor' not in pack or 'fm_vendor' not in pack:
+                issues.append({
+                    'type': 'missing_vendor_mapping',
+                    'device_type': device_type,
                     'severity': 'error'
                 })
 
@@ -367,6 +457,52 @@ class ConfigManager:
                     'device_type': device_type,
                     'severity': 'warning'
                 })
+
+        # Validate command mappings
+        for device_type, commands in config_mappings.items():
+            if not isinstance(commands, dict):
+                issues.append({
+                    'type': 'invalid_command_mapping',
+                    'device_type': device_type,
+                    'severity': 'error'
+                })
+            else:
+                for command, filename in commands.items():
+                    if not isinstance(command, str) or not isinstance(filename, str):
+                        issues.append({
+                            'type': 'invalid_command_mapping_type',
+                            'device_type': device_type,
+                            'command': command,
+                            'filename': filename,
+                            'severity': 'error'
+                        })
+
+        # Validate site hierarchy if present
+        site_hierarchy = self.mappings.get('site_hierarchy', {})
+        if site_hierarchy:
+            # Check for circular references
+            visited = set()
+            path = []
+            
+            def check_circular(site):
+                if site in path:
+                    issues.append({
+                        'type': 'circular_reference',
+                        'site': site,
+                        'path': '->'.join(path),
+                        'severity': 'error'
+                    })
+                    return
+                if site in visited:
+                    return
+                visited.add(site)
+                path.append(site)
+                for child in site_hierarchy.get(site, []):
+                    check_circular(child)
+                path.pop()
+
+            for site in site_hierarchy:
+                check_circular(site)
         
         # Log validation results
         if issues:

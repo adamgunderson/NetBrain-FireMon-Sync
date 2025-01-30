@@ -1,160 +1,123 @@
 # File: sync-mappings.yaml
 # Configuration mappings for NetBrain to FireMon sync
 
-# FireMon collector group mappings based on geographic region
+# Collector group mappings
 collector_mapping:
-  NA: "1716af41-caf5-40c6-a81b-84202fc640aa"  # North America collector
-  EU: "2826b52-d7b6-5bf7-bc2b-95313f751bb"    # Europe collector
-  APAC: "3936c63-e8c7-6cg8-cd3c-a6424g862cc"  # Asia-Pacific collector
+  'NA': 'c950063d-a2d9-417f-bbf4-f167ae257eb7'  # North America collectors
+  'EU': 'e850063d-b3d9-427f-bbf4-f167ae257eb8'  # Europe collectors
+  'AP': 'f750063d-c4d9-437f-bbf4-f167ae257eb9'  # Asia Pacific collectors
+  'CN': 'c950063d-a2d9-417f-bbf4-f167ae257eb7'  # China collectors
 
-# Device mappings - maps NetBrain device types to FireMon device packs
+# Device pack mappings with integrated vendor normalization
 device_pack_mapping:
-  "Juniper EX Switch":
-    artifact_id: "juniper_ex"
-    group_id: "com.fm.sm.dp.juniper_ex"
-    device_type: "ROUTER_SWITCH"
-    device_name: "EX Series Ethernet Switch"
+  'Juniper SRX Firewall':
+    artifact_id: 'juniper_srx'
+    group_id: 'com.fm.sm.dp.juniper_srx'
+    device_type: 'FIREWALL'
+    device_name: 'SRX'
+    model_patterns:
+      - '^SRX\d+'      # Matches SRX followed by numbers (e.g., SRX340)
+      - '^vSRX'        # Matches virtual SRX
+    nb_vendor: 'Juniper'
+    fm_vendor: 'Juniper Networks'
+  
+  'Palo Alto Firewall':
+    artifact_id: 'palo_alto_firewall'
+    group_id: 'com.fm.sm.dp.paloalto'
+    device_type: 'FIREWALL'
+    device_name: 'Firewall'
+    model_patterns:
+      - '^PA-\d+'      # Matches PA- followed by numbers
+      - '^VM-\d+'      # Matches VM- series
+    nb_vendor: 'Palo Alto'
+    fm_vendor: 'Palo Alto Networks'
+    
+  'Check Point Firewall':
+    artifact_id: 'checkpoint_firewall'
+    group_id: 'com.fm.sm.dp.checkpoint'
+    device_type: 'FIREWALL'
+    device_name: 'Firewall'
+    model_patterns:
+      - '^CP-\d+'
+      - '^VSX'
+    nb_vendor: 'Check Point'
+    fm_vendor: 'Check Point Software Technologies'
+    
+  'Cisco IOS Router':
+    artifact_id: 'cisco_ios'
+    group_id: 'com.fm.sm.dp.cisco'
+    device_type: 'ROUTER_SWITCH'
+    device_name: 'IOS'
+    model_patterns:
+      - '^ISR\d+'
+      - '^ASR\d+'
+      - '^CSR\d+'
+    nb_vendor: 'Cisco'
+    fm_vendor: 'Cisco Systems'
 
-  "Juniper Router":
-    artifact_id: "juniper_mseries"
-    group_id: "com.fm.sm.dp.juniper_mseries"
-    device_type: "ROUTER_SWITCH"
-    device_name: "M Series"
+  'Cisco IOS Switch':
+    artifact_id: 'cisco_ios'
+    group_id: 'com.fm.sm.dp.cisco'
+    device_type: 'ROUTER_SWITCH'
+    device_name: 'IOS'
+    model_patterns:
+      - '^WS-C\d+'
+      - '^C\d+'
+    nb_vendor: 'Cisco'
+    fm_vendor: 'Cisco Systems'
 
-  "Juniper QFX Ethernet Switch":
-    artifact_id: "juniper_ex"
-    group_id: "com.fm.sm.dp.juniper_ex"
-    device_type: "ROUTER_SWITCH"
-    device_name: "QFX Series"
+  'Cisco ASA Firewall':
+    artifact_id: 'cisco_asa'
+    group_id: 'com.fm.sm.dp.cisco'
+    device_type: 'FIREWALL'
+    device_name: 'ASA'
+    model_patterns:
+      - '^ASA\d+'
+      - '^ASAv'
+    nb_vendor: 'Cisco'
+    fm_vendor: 'Cisco Systems'
 
-  "Juniper SRX Firewall":
-    artifact_id: "juniper_srx"
-    group_id: "com.fm.sm.dp.juniper_srx"
-    device_type: "FIREWALL"
-    device_name: "SRX"
-
-  "Palo Alto Firewall":
-    artifact_id: "palo_alto_firewall"
-    group_id: "com.fm.sm.dp.paloalto"
-    device_type: "FIREWALL"
-    device_name: "Firewall"
-
-  "Palo Alto Panorama":
-    artifact_id: "palo_alto_panorama"
-    group_id: "com.fm.sm.dp.paloalto_panorama"
-    device_type: "DEVICE_MGR"
-    device_name: "Panorama"
-
-  "Aruba Switch":
-    artifact_id: "cisco_ios"  # Uses IOS-style parsing
-    group_id: "com.fm.sm.dp.cisco-ios"
-    device_type: "ROUTER_SWITCH"
-    device_name: "IOS"
-
-  "Cisco Meraki Switch":
-    artifact_id: "cisco_meraki_network"
-    group_id: "com.fm.sm.dp.cisco-meraki-network"
-    device_type: "FIREWALL"
-    device_name: "Meraki Network"
-
-  "Arista Switch":
-    artifact_id: "cisco_ios"  # Uses IOS-style parsing
-    group_id: "com.fm.sm.dp.cisco-ios"
-    device_type: "ROUTER_SWITCH"
-    device_name: "IOS"
-
-  "Cisco IOS Switch":
-    artifact_id: "cisco_ios"
-    group_id: "com.fm.sm.dp.cisco-ios"
-    device_type: "ROUTER_SWITCH"
-    device_name: "IOS"
-
-# Configuration file mappings - maps NetBrain commands to FireMon config files
+# Config file mappings
 config_file_mapping:
-  "Juniper EX Switch":
-    "show configuration | no-more": "config_xml"
-    "show interfaces": "interfaces_xml"
-    "show version": "version_xml"
-    "show route": "route_xml"
-
-  "Juniper Router":
-    "show configuration | no-more": "config_xml"
-    "show interfaces": "interfaces_xml"
-    "show version": "version_xml"
-    "show route": "route_xml"
-
-  "Juniper QFX Ethernet Switch":
-    "show configuration | no-more": "config_xml"
-    "show interfaces": "interfaces_xml"
-    "show version": "version_xml"
-    "show route": "route_xml"
-
-  "Juniper SRX Firewall":
-    "show configuration | no-more": "config_xml"
-    "show interfaces": "interfaces_xml"
-    "show version": "version_xml"
-    "show security zones": "zones_xml"
-    "show route": "route_xml"
-    "show security policies hit-count": "policy_hits_xml"
-
-  "Palo Alto Firewall":
-    "show config running": "config_xml"
-    "show interface all": "interfaces_xml"
-    "show system info": "version_xml"
-    "show routing route": "route_xml"
-    "show zone": "zones_xml"
-    "show running security-policy hit-count": "policy_hits_xml"
-
-  "Palo Alto Panorama":
-    "show config running": "config_xml"
-    "show system info": "version_xml"
-    "show devices all": "managed_devices_xml"
-
-  "Aruba Switch":
-    "show running-config": "config_xml"
-    "show interfaces": "interfaces_xml"
-    "show version": "version_xml"
-    "show ip route": "route_xml"
-
-  "Cisco Meraki Switch":
-    "show running-config": "config_xml"
-    "show interfaces": "interfaces_xml"
-    "show version": "version_xml"
-
-  "Arista Switch":
-    "show running-config": "config_xml"
-    "show interfaces": "interfaces_xml"
-    "show version": "version_xml"
-    "show ip route": "route_xml"
-
-  "Cisco IOS Switch":
-    "show running-config": "config_xml"
-    "show interfaces": "interfaces_xml"
-    "show version": "version_xml"
-    "show ip route": "route_xml"
-    "show vlan": "vlan_xml"
+  'Juniper SRX Firewall':
+    'show configuration | display xml': 'config_xml'
+    'show interfaces | display xml': 'interfaces_xml'
+    'show version | display xml': 'version_xml'
+  'Palo Alto Firewall':
+    'show config running': 'config_xml'
+    'show interface all': 'interfaces_xml'
+    'show system info': 'version_xml'
+  'Cisco IOS Router':
+    'show running-config': 'config_txt'
+    'show interfaces': 'interfaces_txt'
+    'show version': 'version_txt'
+  'Cisco ASA Firewall':
+    'show running-config': 'config_txt'
+    'show interfaces': 'interfaces_txt'
+    'show version': 'version_txt'
 
 # Default device settings
 default_settings:
-  retrievalMethod: "FromDevice"
+  retrievalMethod: 'FromDevice'
   suppressFQDNCapabilities: false
   useCLICommandGeneration: false
   logMonitoringEnabled: true
   changeMonitoringEnabled: true
-  scheduledRetrievalEnabled: false
   checkForChangeEnabled: false
-  port: 22
-  encoding: "utf-8"
-  serverAliveInterval: 30
+  scheduledRetrievalEnabled: false
   retrievalCallTimeOut: 120
+  serverAliveInterval: 30
 
 # Validation rules
 validation_rules:
-  allowed_config_age_hours: 24
-  required_config_files:
-    - "config_xml"
-    - "interfaces_xml"
-  warning_thresholds:
-    max_devices_per_group: 1000
-    max_config_size_mb: 10
-    min_free_disk_space_gb: 5
+  required_configs:
+    - 'config_xml'
+    - 'interfaces_xml'
+  device_pack_checks:
+    - vendor_match
+    - model_match
+    - type_match
+  license_checks:
+    - 'SM'
+    - 'PO'
+    - 'PP'

@@ -32,7 +32,7 @@ def parse_args():
     # Sync mode options
     parser.add_argument(
         '--mode',
-        choices=['full', 'groups', 'licenses', 'configs'],
+        choices=['full', 'groups', 'licenses', 'configs', 'devices'],
         help='Sync mode (overrides SYNC_MODE env var)'
     )
     
@@ -67,7 +67,23 @@ def parse_args():
         help='Set logging level'
     )
     
+    parser.add_argument(
+        '--config',
+        type=str,
+        help='Path to sync mappings configuration file'
+    )
+
     return parser.parse_args()
+
+def setup_signal_handlers(sync_manager: SyncManager):
+    """Setup handlers for graceful shutdown"""
+    def signal_handler(signum, frame):
+        logging.info(f"Received signal {signum}")
+        sync_manager.shutdown()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
 def main():
     # Parse arguments
@@ -83,7 +99,13 @@ def main():
 
     try:
         # Initialize configuration
-        config_manager = ConfigManager()
+        config_manager = ConfigManager(config_path=args.config)
+        
+        # Validate configuration
+        config_issues = config_manager.validate_config()
+        if any(issue['severity'] == 'error' for issue in config_issues):
+            logging.error("Critical configuration issues found. Please fix before continuing.")
+            sys.exit(1)
         
         # Command line arguments override environment variables
         if args.mode:
@@ -94,20 +116,28 @@ def main():
             config_manager.sync_config.continuous_sync = True
             
         # Initialize clients and managers
-        netbrain_client = NetBrainClient(
-            host=os.getenv('NETBRAIN_HOST'),
-            username=os.getenv('NETBRAIN_USERNAME'),
-            password=os.getenv('NETBRAIN_PASSWORD'),
-            tenant=os.getenv('NETBRAIN_TENANT'),
-            config_manager=config_manager
-        )
+        try:
+            netbrain_client = NetBrainClient(
+                host=os.getenv('NETBRAIN_HOST'),
+                username=os.getenv('NETBRAIN_USERNAME'),
+                password=os.getenv('NETBRAIN_PASSWORD'),
+                tenant=os.getenv('NETBRAIN_TENANT'),
+                config_manager=config_manager
+            )
+        except Exception as e:
+            logging.error(f"Failed to initialize NetBrain client: {str(e)}")
+            sys.exit(1)
 
-        firemon_client = FireMonClient(
-            host=os.getenv('FIREMON_HOST'),
-            username=os.getenv('FIREMON_USERNAME'),
-            password=os.getenv('FIREMON_PASSWORD'),
-            domain_id=int(os.getenv('FIREMON_DOMAIN_ID', 1))
-        )
+        try:
+            firemon_client = FireMonClient(
+                host=os.getenv('FIREMON_HOST'),
+                username=os.getenv('FIREMON_USERNAME'),
+                password=os.getenv('FIREMON_PASSWORD'),
+                domain_id=int(os.getenv('FIREMON_DOMAIN_ID', 1))
+            )
+        except Exception as e:
+            logging.error(f"Failed to initialize FireMon client: {str(e)}")
+            sys.exit(1)
 
         group_manager = GroupHierarchyManager(firemon_client)
         report_manager = ReportManager()
@@ -125,18 +155,28 @@ def main():
             validation_manager=validation_manager
         )
 
+        # Setup signal handlers for graceful shutdown
+        setup_signal_handlers(sync_manager)
+
         # Run initial sync
+        logging.info(f"Starting sync in {config_manager.sync_config.sync_mode} mode "
+                    f"(Dry Run: {config_manager.sync_config.dry_run})")
         initial_report = sync_manager.run_sync()
         
         # Generate and save report if requested
         if args.report_file:
-            if args.report_format == 'html':
+            report_format = args.report_format or os.getenv('REPORT_FORMAT', 'json').lower()
+            
+            if report_format == 'html':
                 report_content = report_manager.generate_html_report(initial_report)
                 filename = f"{args.report_file}.html"
+                with open(filename, 'w') as f:
+                    f.write(report_content)
             else:
                 filename = f"{args.report_file}.json"
+                report_manager.save_report(initial_report, filename)
             
-            report_manager.save_report(initial_report, filename)
+            logging.info(f"Report saved to {filename}")
         
         # Print console summary
         print(report_manager.generate_console_summary(initial_report))
@@ -151,11 +191,30 @@ def main():
                 try:
                     report = sync_manager.run_sync()
                     print(report_manager.generate_console_summary(report))
+                    
+                    # Save continuous mode reports if requested
+                    if args.report_file:
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        if report_format == 'html':
+                            continuous_filename = f"{args.report_file}_{timestamp}.html"
+                            report_content = report_manager.generate_html_report(report)
+                            with open(continuous_filename, 'w') as f:
+                                f.write(report_content)
+                        else:
+                            continuous_filename = f"{args.report_file}_{timestamp}.json"
+                            report_manager.save_report(report, continuous_filename)
+                        
+                        logging.info(f"Continuous sync report saved to {continuous_filename}")
+                        
                 except Exception as e:
                     logging.error(f"Error in continuous sync cycle: {str(e)}")
         else:
             logging.info("One-time sync completed")
 
+    except KeyboardInterrupt:
+        logging.info("Received keyboard interrupt, shutting down...")
+        sync_manager.shutdown()
+        
     except Exception as e:
         logging.error(f"Fatal error in sync service: {str(e)}", exc_info=True)
         sys.exit(1)
