@@ -2,6 +2,17 @@
 """
 NetBrain to FireMon Synchronization Service
 Main script that handles the sync process and scheduling
+
+Key features:
+- Environment configuration loading
+- Command-line argument parsing
+- Multiple sync modes: full, groups, licenses, configs, devices
+- Dry run support
+- Continuous sync capability
+- Report generation in HTML/JSON formats
+- Signal handling for graceful shutdown
+- Comprehensive logging
+- Error handling and validation
 """
 
 import os
@@ -24,7 +35,12 @@ from lib.report import ReportManager
 from lib.logger import setup_logging
 
 def parse_args():
-    """Parse command line arguments"""
+    """
+    Parse command line arguments for sync service configuration
+    
+    Returns:
+        Parsed argument namespace
+    """
     parser = argparse.ArgumentParser(
         description='NetBrain to FireMon Device Synchronization Service'
     )
@@ -51,20 +67,19 @@ def parse_args():
     parser.add_argument(
         '--report-file',
         type=str,
-        help='Output file for sync report'
+        help='Base output file path for sync report (without extension)'
     )
     
     parser.add_argument(
         '--report-format',
         choices=['json', 'html'],
-        default='json',
-        help='Report output format'
+        help='Report output format (overrides REPORT_FORMAT env var)'
     )
     
     parser.add_argument(
         '--log-level',
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-        help='Set logging level'
+        help='Set logging level (overrides LOG_LEVEL env var)'
     )
     
     parser.add_argument(
@@ -76,16 +91,67 @@ def parse_args():
     return parser.parse_args()
 
 def setup_signal_handlers(sync_manager: SyncManager):
-    """Setup handlers for graceful shutdown"""
+    """
+    Setup handlers for graceful shutdown on signals
+    
+    Args:
+        sync_manager: SyncManager instance to handle cleanup
+    """
     def signal_handler(signum, frame):
-        logging.info(f"Received signal {signum}")
+        """Signal handler for graceful shutdown"""
+        logging.info(f"Received signal {signum}, initiating graceful shutdown...")
         sync_manager.shutdown()
+        logging.info("Shutdown complete")
         sys.exit(0)
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
+def generate_report_filename(base_path: str, timestamp: str, mode: str, format: str) -> str:
+    """
+    Generate report filename with timestamp and mode
+    
+    Args:
+        base_path: Base file path
+        timestamp: Timestamp string
+        mode: Sync mode (dry_run/full)
+        format: Report format (html/json)
+        
+    Returns:
+        Complete filename with path
+    """
+    # Create reports directory if it doesn't exist
+    report_dir = os.path.dirname(base_path) if os.path.dirname(base_path) else 'reports'
+    os.makedirs(report_dir, exist_ok=True)
+    
+    # Generate filename
+    base_name = os.path.basename(base_path)
+    return f"{os.path.join(report_dir, base_name)}_{timestamp}_{mode}.{format}"
+
+def save_report(report: Dict[str, Any], report_manager: ReportManager, 
+                filename: str, format: str) -> None:
+    """
+    Save sync report to file
+    
+    Args:
+        report: Report data dictionary
+        report_manager: ReportManager instance
+        filename: Output filename
+        format: Report format (html/json)
+    """
+    try:
+        if format == 'html':
+            report_content = report_manager.generate_html_report(report)
+            with open(filename, 'w') as f:
+                f.write(report_content)
+        else:
+            report_manager.save_report(report, filename)
+        logging.info(f"Report saved to {filename}")
+    except Exception as e:
+        logging.error(f"Error saving report to {filename}: {str(e)}")
+
 def main():
+    """Main entry point for sync service"""
     # Parse arguments
     args = parse_args()
     
@@ -105,6 +171,9 @@ def main():
         config_issues = config_manager.validate_config()
         if any(issue['severity'] == 'error' for issue in config_issues):
             logging.error("Critical configuration issues found. Please fix before continuing.")
+            for issue in config_issues:
+                if issue['severity'] == 'error':
+                    logging.error(f"Config Error: {issue['type']} - {issue.get('description', '')}")
             sys.exit(1)
         
         # Command line arguments override environment variables
@@ -158,25 +227,29 @@ def main():
         # Setup signal handlers for graceful shutdown
         setup_signal_handlers(sync_manager)
 
+        # Get report format from arguments or environment
+        report_format = (args.report_format or 
+                        os.getenv('REPORT_FORMAT', 'json')).lower()
+        
         # Run initial sync
         logging.info(f"Starting sync in {config_manager.sync_config.sync_mode} mode "
                     f"(Dry Run: {config_manager.sync_config.dry_run})")
+        
         initial_report = sync_manager.run_sync()
         
         # Generate and save report if requested
         if args.report_file:
-            report_format = args.report_format or os.getenv('REPORT_FORMAT', 'json').lower()
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            mode_suffix = 'dry_run' if config_manager.sync_config.dry_run else 'full'
             
-            if report_format == 'html':
-                report_content = report_manager.generate_html_report(initial_report)
-                filename = f"{args.report_file}.html"
-                with open(filename, 'w') as f:
-                    f.write(report_content)
-            else:
-                filename = f"{args.report_file}.json"
-                report_manager.save_report(initial_report, filename)
+            filename = generate_report_filename(
+                args.report_file, 
+                timestamp, 
+                mode_suffix, 
+                report_format
+            )
             
-            logging.info(f"Report saved to {filename}")
+            save_report(initial_report, report_manager, filename, report_format)
         
         # Print console summary
         print(report_manager.generate_console_summary(initial_report))
@@ -195,19 +268,19 @@ def main():
                     # Save continuous mode reports if requested
                     if args.report_file:
                         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                        if report_format == 'html':
-                            continuous_filename = f"{args.report_file}_{timestamp}.html"
-                            report_content = report_manager.generate_html_report(report)
-                            with open(continuous_filename, 'w') as f:
-                                f.write(report_content)
-                        else:
-                            continuous_filename = f"{args.report_file}_{timestamp}.json"
-                            report_manager.save_report(report, continuous_filename)
+                        filename = generate_report_filename(
+                            args.report_file,
+                            timestamp,
+                            'continuous',
+                            report_format
+                        )
                         
-                        logging.info(f"Continuous sync report saved to {continuous_filename}")
+                        save_report(report, report_manager, filename, report_format)
                         
                 except Exception as e:
                     logging.error(f"Error in continuous sync cycle: {str(e)}")
+                    if log_level == 'DEBUG':
+                        logging.exception("Detailed error trace:")
         else:
             logging.info("One-time sync completed")
 
