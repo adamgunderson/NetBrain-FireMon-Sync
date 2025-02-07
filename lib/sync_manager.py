@@ -4,6 +4,7 @@ NetBrain to FireMon Synchronization Manager
 
 This module handles the synchronization of devices, configurations, groups, and licenses
 between NetBrain and FireMon systems. Key features include:
+- Enhanced device pack matching logic for various device types
 - Parallel processing using ThreadPoolExecutor for improved performance
 - Memory-efficient batch processing
 - Multi-level caching to reduce API calls
@@ -235,9 +236,10 @@ class SyncManager:
                 logging.error(f"Error during cleanup: {str(cleanup_error)}")
 
     def _calculate_device_delta(self, nb_devices: List[Dict[str, Any]], 
-                              fm_devices: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+                            fm_devices: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         """
         Calculate the difference between NetBrain and FireMon devices
+        Handles both devicePack and direct product/vendor fields in FireMon API response
         
         Args:
             nb_devices: List of NetBrain devices
@@ -277,9 +279,9 @@ class SyncManager:
                     'hostname': hostname,
                     'mgmt_ip': fm_device.get('managementIp', 'N/A'),
                     'collector_group': fm_device.get('collectorGroupName', 'N/A'),
-                    'device_pack': fm_device.get('devicePack', {}).get('deviceName', 'N/A'),
-                    'status': fm_device.get('state', 'N/A'),
-                    'last_retrieval': fm_device.get('lastRetrievalDate', 'N/A')
+                    'device_pack': fm_device.get('product', 'N/A'),
+                    'status': fm_device.get('managedType', 'N/A'),
+                    'last_retrieval': fm_device.get('lastRevision', 'N/A')
                 })
 
         # Compare devices that exist in both systems
@@ -297,13 +299,29 @@ class SyncManager:
                 )
 
                 if device_pack:
-                    # Compare using normalized vendor names and expected device pack
-                    fm_type = fm_device.get('devicePack', {}).get('deviceName', 'N/A')
+                    # Get FireMon device type and vendor - handle both data structures
+                    fm_type = None
+                    fm_vendor = None
+
+                    # Try devicePack structure first
+                    if fm_device.get('devicePack'):
+                        fm_type = fm_device['devicePack'].get('deviceName')
+                        fm_vendor = fm_device['devicePack'].get('vendor')
+                    
+                    # If not found, try direct fields
+                    if not fm_type:
+                        fm_type = fm_device.get('product')
+                    if not fm_vendor:
+                        fm_vendor = fm_device.get('vendor')
+
+                    logging.debug(f"Device {hostname} - FM Type: {fm_type}, FM Vendor: {fm_vendor}, "
+                                f"Expected Type: {device_pack['device_name']}, "
+                                f"Expected Vendor: {device_pack['fm_vendor']}")
+
                     if fm_type != device_pack['device_name']:
                         differences.append(f"Device type mismatch: Expected={device_pack['device_name']}, "
                                         f"Actual={fm_type}")
                     
-                    fm_vendor = fm_device.get('devicePack', {}).get('vendor', 'N/A')
                     if fm_vendor != device_pack['fm_vendor']:
                         differences.append(f"Vendor mismatch: Expected={device_pack['fm_vendor']}, "
                                         f"Actual={fm_vendor}")
@@ -323,12 +341,18 @@ class SyncManager:
                                     f"FM={fm_device.get('managementIp', 'N/A')}")
 
                 nb_site = nb_device.get('site', 'N/A')
+                if nb_site.startswith("My Network/"):
+                    nb_site = nb_site[len("My Network/"):]
+                    
                 expected_collector = self.config_manager.get_collector_group_id(nb_site)
                 if expected_collector and str(fm_device.get('collectorGroupId')) != str(expected_collector):
                     differences.append(f"Collector group mismatch: Expected={expected_collector}, "
                                     f"Actual={fm_device.get('collectorGroupId', 'N/A')}")
 
                 if differences:
+                    # When adding to different list, include both possible sources of device pack info
+                    device_pack_info = (fm_device.get('devicePack', {}).get('deviceName') or 
+                                    fm_device.get('product', 'N/A'))
                     delta['different'].append({
                         'hostname': hostname,
                         'differences': differences,
@@ -343,9 +367,9 @@ class SyncManager:
                         'firemon_data': {
                             'mgmt_ip': fm_device.get('managementIp', 'N/A'),
                             'collector_group': fm_device.get('collectorGroupName', 'N/A'),
-                            'device_pack': fm_device.get('devicePack', {}).get('deviceName', 'N/A'),
-                            'status': fm_device.get('state', 'N/A'),
-                            'last_retrieval': fm_device.get('lastRetrievalDate', 'N/A')
+                            'device_pack': device_pack_info,
+                            'status': fm_device.get('managedType', 'N/A'),
+                            'last_retrieval': fm_device.get('lastRevision', 'N/A')
                         }
                     })
                 else:
@@ -476,7 +500,10 @@ class SyncManager:
 
             # Add collector group if site is mapped
             if device.get('site'):
-                collector_id = self.config_manager.get_collector_group_id(device['site'])
+                site = device['site']
+                if site.startswith("My Network/"):
+                    site = site[len("My Network/"):]
+                collector_id = self.config_manager.get_collector_group_id(site)
                 if collector_id:
                     device_data['collectorGroupId'] = collector_id
 
@@ -532,15 +559,20 @@ class SyncManager:
 
             # Check device pack
             current_pack = fm_device.get('devicePack', {})
-            if (current_pack.get('artifactId') != device_pack['artifact_id'] or
-                current_pack.get('groupId') != device_pack['group_id'] or
-                current_pack.get('deviceType') != device_pack['device_type'] or
-                current_pack.get('deviceName') != device_pack['device_name']):
+            # Also check direct fields if devicePack is not present
+            current_type = (current_pack.get('deviceName') or fm_device.get('product'))
+            current_vendor = (current_pack.get('vendor') or fm_device.get('vendor'))
+            
+            if (current_type != device_pack['device_name'] or
+                current_vendor != device_pack['fm_vendor']):
                 updates_needed.append('device_pack')
 
             # Check collector group
             if nb_device.get('site'):
-                expected_collector = self.config_manager.get_collector_group_id(nb_device['site'])
+                site = nb_device['site']
+                if site.startswith("My Network/"):
+                    site = site[len("My Network/"):]
+                expected_collector = self.config_manager.get_collector_group_id(site)
                 if expected_collector and str(fm_device.get('collectorGroupId')) != str(expected_collector):
                     updates_needed.append('collector_group')
 
