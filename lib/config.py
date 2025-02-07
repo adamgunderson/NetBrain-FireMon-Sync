@@ -159,7 +159,7 @@ class ConfigManager:
             device_type: NetBrain device type (e.g. "Palo Alto Firewall") 
             model: Device model string (e.g. "PA-850")
             vendor: NetBrain vendor name (e.g. "Palo Alto Networks")
-            
+                
         Returns:
             Device pack configuration or None if no match found
         """
@@ -173,18 +173,22 @@ class ConfigManager:
                 logging.debug(f"Available device pack mappings: {list(device_packs.keys())}")
                 logging.warning(f"No device pack mapping found for device type: {device_type}")
                 return None
-                
-            # Verify vendor match with case-insensitive comparison
-            if device_pack.get('nb_vendor', '').lower() != vendor.lower():
+                    
+            # Normalize vendor names for comparison
+            nb_vendor_normalized = device_pack.get('nb_vendor', '').lower()
+            vendor_normalized = vendor.lower()
+            
+            # Look for partial matches in vendor name
+            if not (nb_vendor_normalized in vendor_normalized or vendor_normalized in nb_vendor_normalized):
                 logging.warning(f"Vendor mismatch for device type {device_type}: "
                               f"expected {device_pack.get('nb_vendor')}, got {vendor}")
                 return None
-                
+                    
             # If no model patterns defined, just return the device pack
             if 'model_patterns' not in device_pack:
                 logging.debug(f"No model patterns defined for {device_type}, considering it a match")
                 return device_pack
-                
+                    
             # Check if model matches any of the defined patterns
             for pattern in device_pack['model_patterns']:
                 try:
@@ -194,7 +198,7 @@ class ConfigManager:
                 except re.error as e:
                     logging.error(f"Invalid regex pattern '{pattern}' for device type {device_type}: {str(e)}")
                     continue
-                    
+                        
             logging.warning(f"Model {model} does not match any patterns for device type {device_type}")
             logging.debug(f"Available patterns: {device_pack['model_patterns']}")
             return None

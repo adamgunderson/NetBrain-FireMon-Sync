@@ -143,9 +143,17 @@ class FireMonClient:
         Args:
             hostname: Device hostname
             mgmt_ip: Management IP address
-            
+                
         Returns:
-            Device dictionary if found, None otherwise
+            Device dictionary if found, None otherwise. Example response:
+            {
+                'name': 'device1',
+                'managementIp': '10.0.0.1',
+                'collectorGroupName': 'group1',
+                'product': 'SRX',
+                'managedType': 'MANAGED',
+                'lastRevision': '2024-12-10T19:57:49.487Z'  # Timestamp when config was last imported
+            }
         """
         url = urljoin(self.host, '/securitymanager/api/siql/device/paged-search')
         query = (f"domain {{ id = {self.domain_id} }} AND device {{ "
@@ -161,7 +169,24 @@ class FireMonClient:
         try:
             response = self._request('GET', url, params=params)
             results = response.get('results', [])
-            return results[0] if results else None
+            
+            if results:
+                device = results[0]
+                # Format the response to include key fields including lastRevision
+                return {
+                    'name': device.get('name'),
+                    'managementIp': device.get('managementIp'),
+                    'collectorGroupName': device.get('collectorGroupName'),
+                    'product': device.get('product'),
+                    'managedType': device.get('managedType'),
+                    'lastRevision': device.get('lastRevision'),  # Add lastRevision timestamp
+                    'devicePack': {
+                        'deviceName': device.get('product'),
+                        'vendor': device.get('vendor')
+                    } if device.get('product') and device.get('vendor') else None
+                }
+            return None
+            
         except Exception as e:
             logging.error(f"Error searching for device {hostname}: {str(e)}")
             return None
