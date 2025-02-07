@@ -236,7 +236,7 @@ class SyncManager:
                 logging.error(f"Error during cleanup: {str(cleanup_error)}")
 
     def _calculate_device_delta(self, nb_devices: List[Dict[str, Any]], 
-                            fm_devices: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+                        fm_devices: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         """
         Calculate the difference between NetBrain and FireMon devices
         Handles both devicePack and direct product/vendor fields in FireMon API response
@@ -244,7 +244,7 @@ class SyncManager:
         Args:
             nb_devices: List of NetBrain devices
             fm_devices: List of FireMon devices
-            
+                
         Returns:
             Dictionary containing device differences
         """
@@ -275,13 +275,20 @@ class SyncManager:
         # Find devices only in FireMon
         for hostname, fm_device in fm_by_hostname.items():
             if hostname not in nb_by_hostname:
+                # Get device pack info - try both devicePack structure and direct fields
+                device_pack = (
+                    fm_device.get('devicePack', {}).get('deviceName') or 
+                    fm_device.get('product') or 
+                    'N/A'
+                )
+                
                 delta['only_in_firemon'].append({
                     'hostname': hostname,
                     'mgmt_ip': fm_device.get('managementIp', 'N/A'),
                     'collector_group': fm_device.get('collectorGroupName', 'N/A'),
-                    'device_pack': fm_device.get('product', 'N/A'),
+                    'device_pack': device_pack,
                     'status': fm_device.get('managedType', 'N/A'),
-                    'last_retrieval': fm_device.get('lastRevision', 'N/A')
+                    'last_retrieval': fm_device.get('lastRevision') or 'N/A'  # Use lastRevision timestamp
                 })
 
         # Compare devices that exist in both systems
@@ -369,7 +376,7 @@ class SyncManager:
                             'collector_group': fm_device.get('collectorGroupName', 'N/A'),
                             'device_pack': device_pack_info,
                             'status': fm_device.get('managedType', 'N/A'),
-                            'last_retrieval': fm_device.get('lastRevision', 'N/A')
+                            'last_retrieval': fm_device.get('lastRevision') or 'N/A'  # Use lastRevision timestamp
                         }
                     })
                 else:
