@@ -147,6 +147,7 @@ class FireMonClient:
         Returns:
             Device dictionary if found, None otherwise. Example response:
             {
+                'id': 12345,
                 'name': 'device1',
                 'managementIp': '10.0.0.1',
                 'collectorGroupName': 'group1',
@@ -174,12 +175,13 @@ class FireMonClient:
                 device = results[0]
                 # Format the response to include key fields including lastRevision
                 return {
+                    'id': device.get('id'),
                     'name': device.get('name'),
                     'managementIp': device.get('managementIp'),
                     'collectorGroupName': device.get('collectorGroupName'),
                     'product': device.get('product'),
                     'managedType': device.get('managedType'),
-                    'lastRevision': device.get('lastRevision'),  # Add lastRevision timestamp
+                    'lastRevision': device.get('lastRevision'),  # Get lastRevision from the API response
                     'devicePack': {
                         'deviceName': device.get('product'),
                         'vendor': device.get('vendor')

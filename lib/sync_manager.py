@@ -246,7 +246,11 @@ class SyncManager:
             fm_devices: List of FireMon devices
                 
         Returns:
-            Dictionary containing device differences
+            Dictionary containing device differences with categories:
+            - only_in_netbrain: devices found only in NetBrain
+            - only_in_firemon: devices found only in FireMon
+            - matching: devices that match in both systems
+            - different: devices with differences between systems
         """
         logging.info("Calculating device delta between NetBrain and FireMon...")
         nb_by_hostname = {d['hostname']: d for d in nb_devices}
@@ -281,6 +285,13 @@ class SyncManager:
                     fm_device.get('product') or 
                     'N/A'
                 )
+
+                # Handle lastRevision timestamp
+                last_revision = fm_device.get('lastRevision')
+                if isinstance(last_revision, str) and last_revision.strip():
+                    last_revision_display = last_revision
+                else:
+                    last_revision_display = 'N/A'
                 
                 delta['only_in_firemon'].append({
                     'hostname': hostname,
@@ -288,7 +299,7 @@ class SyncManager:
                     'collector_group': fm_device.get('collectorGroupName', 'N/A'),
                     'device_pack': device_pack,
                     'status': fm_device.get('managedType', 'N/A'),
-                    'last_retrieval': fm_device.get('lastRevision') or 'N/A'  # Use lastRevision timestamp
+                    'last_retrieval': last_revision_display
                 })
 
         # Compare devices that exist in both systems
@@ -335,7 +346,7 @@ class SyncManager:
 
                     # Check model pattern match
                     if 'model_patterns' in device_pack:
-                        if not any(re.match(pattern, nb_model) for pattern in device_pack['model_patterns']):
+                        if not any(re.match(pattern, nb_model, re.IGNORECASE) for pattern in device_pack['model_patterns']):
                             differences.append(f"Model {nb_model} does not match expected patterns for "
                                           f"device type {device_pack['device_name']}")
                 else:
@@ -355,6 +366,13 @@ class SyncManager:
                 if expected_collector and str(fm_device.get('collectorGroupId')) != str(expected_collector):
                     differences.append(f"Collector group mismatch: Expected={expected_collector}, "
                                     f"Actual={fm_device.get('collectorGroupId', 'N/A')}")
+
+                # Handle lastRevision timestamp for devices with differences
+                last_revision = fm_device.get('lastRevision')
+                if isinstance(last_revision, str) and last_revision.strip():
+                    last_revision_display = last_revision
+                else:
+                    last_revision_display = 'N/A'
 
                 if differences:
                     # When adding to different list, include both possible sources of device pack info
@@ -376,7 +394,7 @@ class SyncManager:
                             'collector_group': fm_device.get('collectorGroupName', 'N/A'),
                             'device_pack': device_pack_info,
                             'status': fm_device.get('managedType', 'N/A'),
-                            'last_retrieval': fm_device.get('lastRevision') or 'N/A'  # Use lastRevision timestamp
+                            'last_retrieval': last_revision_display
                         }
                     })
                 else:
