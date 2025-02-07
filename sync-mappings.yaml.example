@@ -16,7 +16,7 @@ device_pack_mapping:
     device_type: 'FIREWALL'
     device_name: 'SRX'
     model_patterns:
-      - "^PA-[0-9]+"      #  # Matches PA-850, PA-3200, etc.
+      - '^SRX\d+'      # Matches SRX followed by numbers
       - '^vSRX'        # Matches virtual SRX
     nb_vendor: 'Juniper'
     fm_vendor: 'Juniper Networks'
@@ -27,7 +27,7 @@ device_pack_mapping:
     device_type: 'FIREWALL'
     device_name: 'Firewall'
     model_patterns:
-      - '^PA-\d+'      # Matches PA- followed by numbers
+      - "^PA-[0-9]+"      # Matches PA- followed by numbers
       - '^VM-\d+'      # Matches VM- series
     nb_vendor: 'Palo Alto'
     fm_vendor: 'Palo Alto Networks'
