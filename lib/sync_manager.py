@@ -569,6 +569,82 @@ class SyncManager:
             logging.error(f"Error creating device {device['hostname']}: {str(e)}")
             raise
 
+    def _sync_licenses_parallel(self) -> None:
+        """Process license synchronization in parallel"""
+        try:
+            if self.config_manager.sync_config.dry_run:
+                logging.info("Skipping license sync in dry run mode")
+                return
+
+            # Get devices from both systems
+            nb_devices = self.netbrain.get_all_devices()
+            fm_devices = self.firemon.get_all_devices()
+            
+            # Calculate delta
+            delta = self._calculate_device_delta(nb_devices, fm_devices)
+            
+            # Process devices in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = []
+                
+                # Process devices that exist in both systems
+                nb_by_hostname = {d['hostname']: d for d in nb_devices}
+                for fm_device in fm_devices:
+                    if fm_device['name'] in nb_by_hostname:
+                        futures.append(executor.submit(
+                            self._sync_device_licenses, 
+                            fm_device
+                        ))
+                
+                # Remove licenses from devices that only exist in FireMon
+                for device in delta['only_in_firemon']:
+                    fm_device = next(
+                        (d for d in fm_devices if d['name'] == device['hostname']), 
+                        None
+                    )
+                    if fm_device:
+                        futures.append(executor.submit(
+                            self._remove_device_licenses,
+                            fm_device
+                        ))
+                
+                concurrent.futures.wait(futures)
+                
+        except Exception as e:
+            logging.error(f"Error in parallel license sync: {str(e)}")
+            raise
+
+    def _remove_device_licenses(self, fm_device: Dict[str, Any]) -> None:
+        """Remove all licenses from a FireMon device"""
+        try:
+            current_licenses = set(fm_device.get('licenses', []))
+            if current_licenses:
+                self.firemon.manage_device_license(
+                    fm_device['id'],
+                    add=False,
+                    products=list(current_licenses)
+                )
+                
+                with self._changes_lock:
+                    self.changes['licenses'].append({
+                        'device': fm_device['name'],
+                        'action': 'remove',
+                        'status': 'success',
+                        'details': {
+                            'removed': list(current_licenses)
+                        }
+                    })
+                logging.info(f"Removed licenses {current_licenses} from device {fm_device['name']}")
+                
+        except Exception as e:
+            logging.error(f"Error removing licenses from device {fm_device['name']}: {str(e)}")
+            with self._changes_lock:
+                self.changes['licenses'].append({
+                    'device': fm_device['name'],
+                    'action': 'error',
+                    'error': str(e)
+                })
+
     def _update_device_if_needed(self, nb_device: Dict[str, Any], fm_device: Dict[str, Any],
                                device_pack: Dict[str, Any]) -> None:
         """
