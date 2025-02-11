@@ -646,7 +646,7 @@ class SyncManager:
                 })
 
     def _update_device_if_needed(self, nb_device: Dict[str, Any], fm_device: Dict[str, Any],
-                               device_pack: Dict[str, Any]) -> None:
+                           device_pack: Dict[str, Any]) -> None:
         """
         Update FireMon device if changes are detected
         
@@ -698,21 +698,22 @@ class SyncManager:
 
                 self.firemon.update_device(fm_device['id'], update_data)
 
-            # Sync configurations if enabled
-            if self.config_manager.sync_config.enable_config_sync:
-                self._sync_device_configs(nb_device, fm_device)
+            # Only sync specific components based on sync mode
+            if self.config_manager.sync_config.sync_mode in ['full', 'configs']:
+                if self.config_manager.sync_config.enable_config_sync:
+                    self._sync_device_configs(nb_device, fm_device)
 
-            # Sync licenses if enabled
-            if self.config_manager.sync_config.enable_license_sync:
-                self._sync_device_licenses(fm_device)
+            if self.config_manager.sync_config.sync_mode in ['full', 'licenses']:
+                if self.config_manager.sync_config.enable_license_sync:
+                    self._sync_device_licenses(fm_device)
 
-            # Sync group membership if enabled and site exists
-            if nb_device.get('site') and self.config_manager.sync_config.enable_group_sync:
-                self.group_manager.sync_device_group_membership(
-                    fm_device['id'],
-                    nb_device['site'],
-                    dry_run=False
-                )
+            if self.config_manager.sync_config.sync_mode in ['full', 'groups']:
+                if nb_device.get('site') and self.config_manager.sync_config.enable_group_sync:
+                    self.group_manager.sync_device_group_membership(
+                        fm_device['id'],
+                        nb_device['site'],
+                        dry_run=False
+                    )
 
         except Exception as e:
             logging.error(f"Error updating device {nb_device['hostname']}: {str(e)}")

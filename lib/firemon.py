@@ -124,6 +124,11 @@ class FireMonClient:
                 
                 response = self._request('GET', url, params=params)
                 devices = response.get('results', [])
+
+                # Log a sample device to debug the response structure
+                if devices and page == 0:
+                    logging.debug(f"Sample FireMon device response: {json.dumps(devices[0], indent=2)}")
+
                 all_devices.extend(devices)
                 
                 if len(devices) < page_size:
@@ -133,7 +138,7 @@ class FireMonClient:
                 
             except Exception as e:
                 raise FireMonAPIError(f"Error retrieving devices: {str(e)}")
-                
+                    
         return all_devices
 
     def search_device(self, hostname: str, mgmt_ip: str) -> Optional[Dict[str, Any]]:
