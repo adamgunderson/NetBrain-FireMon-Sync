@@ -192,13 +192,25 @@ class ValidationManager:
         return issues
 
     def run_all_validations(self) -> Dict[str, List[Dict[str, Any]]]:
-        """Run all validation checks with dry-run awareness"""
+        """
+        Run validation checks based on sync mode
+        Only validates components that are part of the current sync mode
+        """
         if self.config.sync_config.dry_run:
             logging.info("Running validations in dry-run mode - API calls will be skipped")
+        
+        sync_mode = self.config.sync_config.sync_mode
+        
+        # Only run validations relevant to the current sync mode
+        if sync_mode in ['full', 'groups']:
+            self.validate_device_groups()
             
-        self.validate_device_groups()
-        self.validate_configs()
-        self.validate_licensing()
+        if sync_mode in ['full', 'configs']:
+            self.validate_configs()
+            
+        if sync_mode in ['full', 'licenses']:
+            self.validate_licensing()
+            
         return self.validation_results
 
     def get_validation_summary(self) -> Dict[str, Any]:

@@ -649,6 +649,7 @@ class SyncManager:
                            device_pack: Dict[str, Any]) -> None:
         """
         Update FireMon device if changes are detected
+        Only performs checks relevant to the current sync mode
         
         Args:
             nb_device: NetBrain device dictionary
@@ -658,45 +659,47 @@ class SyncManager:
         try:
             updates_needed = []
 
-            # Check device pack
-            current_pack = fm_device.get('devicePack', {})
-            # Also check direct fields if devicePack is not present
-            current_type = (current_pack.get('deviceName') or fm_device.get('product'))
-            current_vendor = (current_pack.get('vendor') or fm_device.get('vendor'))
-            
-            if (current_type != device_pack['device_name'] or
-                current_vendor != device_pack['fm_vendor']):
-                updates_needed.append('device_pack')
+            # Only check device pack and collector group if doing full sync
+            if self.config_manager.sync_config.sync_mode == 'full':
+                # Check device pack
+                current_pack = fm_device.get('devicePack', {})
+                # Also check direct fields if devicePack is not present
+                current_type = (current_pack.get('deviceName') or fm_device.get('product'))
+                current_vendor = (current_pack.get('vendor') or fm_device.get('vendor'))
+                
+                if (current_type != device_pack['device_name'] or
+                    current_vendor != device_pack['fm_vendor']):
+                    updates_needed.append('device_pack')
 
-            # Check collector group
-            if nb_device.get('site'):
-                site = nb_device['site']
-                if site.startswith("My Network/"):
-                    site = site[len("My Network/"):]
-                expected_collector = self.config_manager.get_collector_group_id(site)
-                if expected_collector and str(fm_device.get('collectorGroupId')) != str(expected_collector):
-                    updates_needed.append('collector_group')
+                # Check collector group
+                if nb_device.get('site'):
+                    site = nb_device['site']
+                    if site.startswith("My Network/"):
+                        site = site[len("My Network/"):]
+                    expected_collector = self.config_manager.get_collector_group_id(site)
+                    if expected_collector and str(fm_device.get('collectorGroupId')) != str(expected_collector):
+                        updates_needed.append('collector_group')
 
-            if updates_needed:
-                # Update device in FireMon
-                update_data = {
-                    'id': fm_device['id'],
-                    'name': fm_device['name'],
-                    'managementIp': fm_device['managementIp']
-                }
-
-                if 'device_pack' in updates_needed:
-                    update_data['devicePack'] = {
-                        'artifactId': device_pack['artifact_id'],
-                        'groupId': device_pack['group_id'],
-                        'deviceType': device_pack['device_type'],
-                        'deviceName': device_pack['device_name']
+                if updates_needed:
+                    # Update device in FireMon
+                    update_data = {
+                        'id': fm_device['id'],
+                        'name': fm_device['name'],
+                        'managementIp': fm_device['managementIp']
                     }
 
-                if 'collector_group' in updates_needed:
-                    update_data['collectorGroupId'] = expected_collector
+                    if 'device_pack' in updates_needed:
+                        update_data['devicePack'] = {
+                            'artifactId': device_pack['artifact_id'],
+                            'groupId': device_pack['group_id'],
+                            'deviceType': device_pack['device_type'],
+                            'deviceName': device_pack['device_name']
+                        }
 
-                self.firemon.update_device(fm_device['id'], update_data)
+                    if 'collector_group' in updates_needed:
+                        update_data['collectorGroupId'] = expected_collector
+
+                    self.firemon.update_device(fm_device['id'], update_data)
 
             # Only sync specific components based on sync mode
             if self.config_manager.sync_config.sync_mode in ['full', 'configs']:

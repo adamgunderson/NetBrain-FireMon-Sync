@@ -11,6 +11,7 @@ Handles all interactions with the FireMon API including:
 """
 
 import os
+import json  # Added missing json import
 import logging
 import requests
 from typing import Dict, List, Any, Optional
