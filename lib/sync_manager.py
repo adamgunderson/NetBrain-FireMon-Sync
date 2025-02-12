@@ -236,10 +236,10 @@ class SyncManager:
                 logging.error(f"Error during cleanup: {str(cleanup_error)}")
 
     def _calculate_device_delta(self, nb_devices: List[Dict[str, Any]], 
-                        fm_devices: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+                            fm_devices: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         """
         Calculate the difference between NetBrain and FireMon devices
-        Handles both devicePack and direct product/vendor fields in FireMon API response
+        Only includes devices that have mappings configured in sync-mappings.yaml
         
         Args:
             nb_devices: List of NetBrain devices
@@ -253,7 +253,17 @@ class SyncManager:
             - different: devices with differences between systems
         """
         logging.info("Calculating device delta between NetBrain and FireMon...")
-        nb_by_hostname = {d['hostname']: d for d in nb_devices}
+
+        # Get configured device types from config manager
+        configured_device_types = self.config_manager.get_mapped_device_types()
+        logging.debug(f"Configured device types: {sorted(configured_device_types)}")
+        
+        # Filter NetBrain devices to only include configured types
+        nb_by_hostname = {
+            d['hostname']: d for d in nb_devices 
+            if d['attributes'].get('subTypeName') in configured_device_types
+        }
+        
         fm_by_hostname = {d['name']: d for d in fm_devices}
         
         delta = {
@@ -263,7 +273,7 @@ class SyncManager:
             'different': []
         }
 
-        # Find devices only in NetBrain
+        # Find devices only in NetBrain (only for configured device types)
         for hostname, nb_device in nb_by_hostname.items():
             if hostname not in fm_by_hostname:
                 delta['only_in_netbrain'].append({
@@ -346,7 +356,8 @@ class SyncManager:
 
                     # Check model pattern match
                     if 'model_patterns' in device_pack:
-                        if not any(re.match(pattern, nb_model, re.IGNORECASE) for pattern in device_pack['model_patterns']):
+                        if not any(re.match(pattern, nb_model, re.IGNORECASE) 
+                                 for pattern in device_pack['model_patterns']):
                             differences.append(f"Model {nb_model} does not match expected patterns for "
                                           f"device type {device_pack['device_name']}")
                 else:
@@ -407,10 +418,39 @@ class SyncManager:
                         'model': nb_device['attributes'].get('model', 'N/A')
                     })
 
+        # Log final counts
         logging.info(f"Delta calculation complete. Found {len(delta['only_in_netbrain'])} devices only in NetBrain, "
                     f"{len(delta['only_in_firemon'])} only in FireMon, {len(delta['different'])} with differences, "
                     f"and {len(delta['matching'])} matching devices.")
+        
+        # Log skipped device types for debugging
+        skipped_types = {d['attributes'].get('subTypeName') for d in nb_devices} - configured_device_types
+        if skipped_types:
+            logging.debug(f"Skipped unconfigured device types: {sorted(skipped_types)}")
+
         return delta
+
+    def _matches_configured_type(self, fm_product: Optional[str], nb_type: str) -> bool:
+        """
+        Helper method to determine if a FireMon product matches a NetBrain device type
+        
+        Args:
+            fm_product: FireMon product name
+            nb_type: NetBrain device type
+            
+        Returns:
+            bool: True if there's a match, False otherwise
+        """
+        if not fm_product:
+            return False
+            
+        # Get the device pack mapping for this NetBrain type
+        device_pack = self.config_manager.get_device_pack(nb_type)
+        if not device_pack:
+            return False
+            
+        # Check if the FireMon product matches the expected device name
+        return device_pack.get('device_name') == fm_product
 
     def _process_device_batch(self, devices: List[Dict[str, Any]]) -> None:
         """
@@ -504,7 +544,7 @@ class SyncManager:
 
     def _create_device_with_configs(self, device: Dict[str, Any], device_pack: Dict[str, Any]) -> None:
         """
-        Create new device in FireMon with configurations
+        Create new device in FireMon with configurations and track created device IDs
         
         Args:
             device: NetBrain device dictionary
@@ -537,6 +577,24 @@ class SyncManager:
 
             # Create device in FireMon
             fm_device = self.firemon.create_device(device_data)
+            
+            # Track creation with FireMon device ID
+            with self._changes_lock:
+                self.changes['devices'].append({
+                    'device': device['hostname'],
+                    'action': 'add',
+                    'status': 'success',
+                    'details': {
+                        'firemon_id': fm_device['id'],
+                        'mgmt_ip': device['mgmtIP'],
+                        'site': device.get('site'),
+                        'type': device['attributes'].get('subTypeName', 'N/A'),
+                        'device_pack': device_pack['device_name'],
+                        'collector_group': collector_id if collector_id else 'N/A'
+                    }
+                })
+
+            logging.info(f"Created device {device['hostname']} in FireMon with ID: {fm_device['id']}")
             
             # Get and import configurations
             if self.config_manager.sync_config.enable_config_sync:

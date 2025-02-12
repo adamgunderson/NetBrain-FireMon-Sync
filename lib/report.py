@@ -212,7 +212,8 @@ class ReportManager:
 
     def generate_console_summary(self, report: Dict[str, Any]) -> str:
         """
-        Generate human-readable console summary
+        Generate human-readable console summary based on sync mode
+        Shows relevant information based on the specific sync mode
         
         Args:
             report: Report dictionary
@@ -220,78 +221,147 @@ class ReportManager:
         Returns:
             Formatted string for console output
         """
-        summary = report.get('summary', {})
-        delta = report.get('delta', {})
-        
-        # Basic summary template
-        basic_summary = f"""
-Sync Operation Summary
-=====================
-Timestamp: {report['timestamp']}
-Mode: {report['sync_mode']}
-"""
+        try:
+            # Get common data
+            summary = report.get('summary', {})
+            execution_time = report.get('execution_time', 0)
+            sync_mode = report.get('sync_mode', 'full')
+            execution_time_str = f"{execution_time:.2f} seconds" if execution_time else "N/A"
+            
+            # Header section is common for all modes
+            header = f"""
+    Sync Operation Summary ({sync_mode} mode{' - Dry Run' if report.get('dry_run') else ''})
+    ================================================
+    Timestamp: {report['timestamp']}
+    Execution Time: {execution_time_str}
+    """
 
-        # Add device delta information if in dry run mode
-        if report.get('dry_run') and delta:
-            device_counts = summary.get('delta', {})
-            delta_summary = f"""
-Device Delta Analysis:
----------------------
-Device Inventory:
-- Total in NetBrain: {device_counts.get('total_in_netbrain', 0)}
-- Total in FireMon: {device_counts.get('total_in_firemon', 0)}
+            # Content varies based on sync mode and dry run status
+            if report.get('dry_run'):
+                if sync_mode == 'devices':
+                    delta_stats = report.get('summary', {}).get('devices', {})
+                    content = f"""
+    Device Analysis:
+    - Total in NetBrain: {delta_stats.get('total_in_netbrain', 0)}
+    - Total in FireMon: {delta_stats.get('total_in_firemon', 0)}
+    - Only in NetBrain: {delta_stats.get('only_in_netbrain', 0)}
+    - Only in FireMon: {delta_stats.get('only_in_firemon', 0)}
+    - Devices with Differences: {delta_stats.get('different', 0)}
+    """
+                elif sync_mode == 'groups':
+                    content = f"""
+    Group Analysis:
+    - Total Groups in NetBrain: {summary.get('groups', {}).get('total_processed', 0)}
+    - Groups to Create: {summary.get('groups', {}).get('to_create', 0)}
+    - Groups to Update: {summary.get('groups', {}).get('to_update', 0)}
+    """
+                elif sync_mode == 'licenses':
+                    content = f"""
+    License Analysis:
+    - Total Devices to Process: {summary.get('licenses', {}).get('total_processed', 0)}
+    - Licenses to Add: {summary.get('licenses', {}).get('to_add', 0)}
+    - Licenses to Remove: {summary.get('licenses', {}).get('to_remove', 0)}
+    """
+                elif sync_mode == 'configs':
+                    content = f"""
+    Configuration Analysis:
+    - Total Devices to Check: {summary.get('configs', {}).get('total_processed', 0)}
+    - Configs Needing Update: {summary.get('configs', {}).get('to_update', 0)}
+    """
+                else:  # full mode
+                    delta_stats = report.get('summary', {}).get('devices', {})
+                    content = f"""
+    Full Sync Analysis:
+    Device Status:
+    - Total in NetBrain: {delta_stats.get('total_in_netbrain', 0)}
+    - Total in FireMon: {delta_stats.get('total_in_firemon', 0)}
+    - Only in NetBrain: {delta_stats.get('only_in_netbrain', 0)}
+    - Only in FireMon: {delta_stats.get('only_in_firemon', 0)}
+    - Devices with Differences: {delta_stats.get('different', 0)}
 
-Device Status:
-- Matching Devices: {device_counts.get('matching', 0)}
-- Only in NetBrain: {device_counts.get('only_in_netbrain', 0)}
-- Only in FireMon: {device_counts.get('only_in_firemon', 0)}
-- Devices with Differences: {device_counts.get('different', 0)}
+    Group Status:
+    - Groups to Create/Update: {summary.get('groups', {}).get('to_update', 0)}
 
-Detailed Device Analysis:
-------------------------
-Devices Only in NetBrain:
-{self._format_device_list(delta.get('only_in_netbrain', []), 'netbrain')}
+    License Status:
+    - Licenses to Adjust: {summary.get('licenses', {}).get('to_update', 0)}
 
-Devices Only in FireMon:
-{self._format_device_list(delta.get('only_in_firemon', []), 'firemon')}
+    Config Status:
+    - Configs to Update: {summary.get('configs', {}).get('to_update', 0)}
+    """
+            else:
+                # Non-dry run mode - show actual changes
+                if sync_mode == 'devices':
+                    device_summary = summary.get('devices', {})
+                    content = f"""
+    Device Changes:
+    - Total Processed: {device_summary.get('total_processed', 0)}
+    - Added: {device_summary.get('added', 0)}
+    - Updated: {device_summary.get('updated', 0)}
+    - Failed: {device_summary.get('failed', 0)}
+    """
+                elif sync_mode == 'groups':
+                    group_summary = summary.get('groups', {})
+                    content = f"""
+    Group Changes:
+    - Total Processed: {group_summary.get('total_processed', 0)}
+    - Created: {group_summary.get('created', 0)}
+    - Updated: {group_summary.get('updated', 0)}
+    - Failed: {group_summary.get('failed', 0)}
+    """
+                elif sync_mode == 'licenses':
+                    license_summary = summary.get('licenses', {})
+                    content = f"""
+    License Changes:
+    - Total Processed: {license_summary.get('total_processed', 0)}
+    - Added: {license_summary.get('added', 0)}
+    - Removed: {license_summary.get('removed', 0)}
+    - Failed: {license_summary.get('failed', 0)}
+    """
+                elif sync_mode == 'configs':
+                    config_summary = summary.get('configs', {})
+                    content = f"""
+    Configuration Changes:
+    - Total Processed: {config_summary.get('total_processed', 0)}
+    - Updated: {config_summary.get('updated', 0)}
+    - Failed: {config_summary.get('failed', 0)}
+    """
+                else:  # full mode
+                    content = f"""
+    Device Changes:
+    - Total Processed: {summary.get('devices', {}).get('total_processed', 0)}
+    - Added: {summary.get('devices', {}).get('added', 0)}
+    - Updated: {summary.get('devices', {}).get('updated', 0)}
+    - Failed: {summary.get('devices', {}).get('failed', 0)}
 
-Devices with Differences:
-{self._format_different_devices(delta.get('different', []))}
-"""
-            return basic_summary + delta_summary
+    Group Changes:
+    - Total Processed: {summary.get('groups', {}).get('total_processed', 0)}
+    - Created: {summary.get('groups', {}).get('created', 0)}
+    - Updated: {summary.get('groups', {}).get('updated', 0)}
+    - Failed: {summary.get('groups', {}).get('failed', 0)}
 
-        # Regular non-dry-run summary
-        regular_summary = f"""
-Device Changes:
-- Total Processed: {summary.get('devices', {}).get('total_processed', 0)}
-- Added: {summary.get('devices', {}).get('added', 0)}
-- Updated: {summary.get('devices', {}).get('updated', 0)}
-- Removed: {summary.get('devices', {}).get('removed', 0)}
-- Failed: {summary.get('devices', {}).get('failed', 0)}
+    License Changes:
+    - Total Processed: {summary.get('licenses', {}).get('total_processed', 0)}
+    - Added: {summary.get('licenses', {}).get('added', 0)}
+    - Removed: {summary.get('licenses', {}).get('removed', 0)}
+    - Failed: {summary.get('licenses', {}).get('failed', 0)}
 
-Group Changes:
-- Total Processed: {summary.get('groups', {}).get('total_processed', 0)}
-- Created: {summary.get('groups', {}).get('created', 0)}
-- Updated: {summary.get('groups', {}).get('updated', 0)}
-- Failed: {summary.get('groups', {}).get('failed', 0)}
+    Configuration Changes:
+    - Total Processed: {summary.get('configs', {}).get('total_processed', 0)}
+    - Updated: {summary.get('configs', {}).get('updated', 0)}
+    - Failed: {summary.get('configs', {}).get('failed', 0)}
+    """
 
-Configuration Updates:
-- Total Processed: {summary.get('configs', {}).get('total_processed', 0)}
-- Updated: {summary.get('configs', {}).get('updated', 0)}
-- Failed: {summary.get('configs', {}).get('failed', 0)}
+            # Footer is common for all modes
+            footer = "\nFull details are available in the report file."
 
-License Changes:
-- Total Processed: {summary.get('licenses', {}).get('total_processed', 0)}
-- Added: {summary.get('licenses', {}).get('added', 0)}
-- Removed: {summary.get('licenses', {}).get('removed', 0)}
-- Failed: {summary.get('licenses', {}).get('failed', 0)}
+            return header + content + footer
 
-Validation Results:
-- Total Issues: {summary.get('validation', {}).get('total_issues', 0)}
-- Errors: {summary.get('validation', {}).get('errors', 0)}
-- Warnings: {summary.get('validation', {}).get('warnings', 0)}
-"""
-        return basic_summary + regular_summary
+        except Exception as e:
+            logging.error(f"Error generating console summary: {str(e)}")
+            return """
+    Error generating sync summary.
+    Please check the logs and report file for details.
+    """
 
     def _format_device_list(self, devices: List[Dict[str, Any]], source: str) -> str:
         """
