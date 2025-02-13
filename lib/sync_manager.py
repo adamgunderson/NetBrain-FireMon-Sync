@@ -544,26 +544,49 @@ class SyncManager:
 
     def _create_device_with_configs(self, device: Dict[str, Any], device_pack: Dict[str, Any]) -> None:
         """
-        Create new device in FireMon with configurations and track created device IDs
+        Create new device in FireMon with configurations
+        Includes enhanced error handling and validation
         
         Args:
             device: NetBrain device dictionary
             device_pack: Device pack configuration
         """
         try:
-            # Prepare device data
+            # Validate required fields before attempting creation
+            required_fields = ['hostname', 'mgmtIP']
+            missing_fields = [field for field in required_fields if not device.get(field)]
+            if missing_fields:
+                raise ValueError(f"Missing required fields for device creation: {missing_fields}")
+                
+            # Validate device pack
+            required_pack_fields = ['artifact_id', 'group_id', 'device_type', 'device_name']
+            missing_pack_fields = [field for field in required_pack_fields if not device_pack.get(field)]
+            if missing_pack_fields:
+                raise ValueError(f"Missing required device pack fields: {missing_pack_fields}")
+
+            # Prepare device data following FireMon API structure
             device_data = {
-                'name': device['hostname'],
-                'managementIp': device['mgmtIP'],
-                'devicePack': {
-                    'artifactId': device_pack['artifact_id'],
-                    'groupId': device_pack['group_id'],
-                    'deviceType': device_pack['device_type'],
-                    'deviceName': device_pack['device_name']
+                "name": device['hostname'],
+                "managementIp": device['mgmtIP'],
+                "domainId": 1,
+                "devicePack": {
+                    "artifactId": device_pack['artifact_id'],
+                    "groupId": device_pack['group_id'],
+                    "deviceType": device_pack['device_type'],
+                    "deviceName": device_pack['device_name'],
+                    "type": "DEVICE_PACK",
+                    "collectionConfig": {
+                        "name": "Default"
+                    }
                 }
             }
 
+            # Add description if available
+            if device['attributes'].get('description'):
+                device_data["description"] = device['attributes']['description']
+
             # Add collector group if site is mapped
+            collector_id = None
             if device.get('site'):
                 site = device['site']
                 if site.startswith("My Network/"):
@@ -571,14 +594,67 @@ class SyncManager:
                 collector_id = self.config_manager.get_collector_group_id(site)
                 if collector_id:
                     device_data['collectorGroupId'] = collector_id
+                else:
+                    logging.warning(f"No collector group mapping found for site: {site}")
 
-            # Add default settings
-            device_data.update(self.config_manager.get_default_settings())
+            # Validate credentials before adding them
+            username = os.getenv('DEFAULT_DEVICE_USERNAME')
+            password = os.getenv('DEFAULT_DEVICE_PASSWORD')
+            if not username or not password:
+                raise ValueError("Missing required device credentials in environment variables")
 
-            # Create device in FireMon
-            fm_device = self.firemon.create_device(device_data)
+            # Add extended settings from config defaults
+            device_data["extendedSettingsJson"] = {
+                "retrievalMethod": "FromDevice",
+                "retrievalCallTimeOut": 120,
+                "serverAliveInterval": 30,
+                "suppressFQDNCapabilities": False,
+                "useCLICommandGeneration": False,
+                "usePrivateConfig": False,
+                "logMonitoringEnabled": False,
+                "changeMonitoringEnabled": False,
+                "scheduledRetrievalEnabled": False,
+                "checkForChangeEnabled": False,
+                "skipRoute": False,
+                "encoding": "",
+                "batchConfigRetrieval": False,
+                "deprecatedCA": False,
+                "retrieveSetSyntaxConfig": False,
+                "skipApplicationFile": False,
+                "resetSSHKeyValue": False,
+                "routesFromConfig": False,
+                "authenticationMethod": "UserPassword",
+                "fallbackAuthentication": False,
+                "checkForChangeOnChangeDetection": False,
+                "username": username,
+                "password": password
+            }
+
+            # Log creation attempt
+            logging.info(f"Creating device {device['hostname']} in FireMon")
+            logging.debug(f"Device creation payload for {device['hostname']}: {json.dumps(device_data, indent=2)}")
             
-            # Track creation with FireMon device ID
+            try:
+                fm_device = self.firemon.create_device(device_data)
+            except FireMonAPIError as api_error:
+                error_msg = f"FireMon API error creating device {device['hostname']}: {str(api_error)}"
+                logging.error(error_msg)
+                with self._changes_lock:
+                    self.changes['devices'].append({
+                        'device': device['hostname'],
+                        'action': 'error',
+                        'error': error_msg,
+                        'details': {
+                            'type': 'api_error',
+                            'mgmt_ip': device['mgmtIP'],
+                            'site': device.get('site'),
+                            'device_pack': device_pack['device_name'],
+                            'collector_group': collector_id if collector_id else 'N/A'
+                        }
+                    })
+                raise
+            
+            # Track successful creation with FireMon device ID
             with self._changes_lock:
                 self.changes['devices'].append({
                     'device': device['hostname'],
@@ -594,37 +670,23 @@ class SyncManager:
                     }
                 })
 
-            logging.info(f"Created device {device['hostname']} in FireMon with ID: {fm_device['id']}")
-            
-            # Get and import configurations
-            if self.config_manager.sync_config.enable_config_sync:
-                configs = self.netbrain.get_device_configs(device['id'])
-                if configs:
-                    # Process and validate configs
-                    mapped_configs = self.config_handler.process_device_configs(device, configs)
-                    self.config_handler.backup_configs(device, mapped_configs)
-                    
-                    # Import configs to FireMon
-                    self.firemon.import_device_config(
-                        fm_device['id'],
-                        mapped_configs,
-                        change_user='NetBrain'
-                    )
-
-            # Add licenses
-            if self.config_manager.sync_config.enable_license_sync:
-                self.firemon.manage_device_license(fm_device['id'], add=True)
-
-            # Update group membership
-            if device.get('site') and self.config_manager.sync_config.enable_group_sync:
-                self.group_manager.sync_device_group_membership(
-                    fm_device['id'],
-                    device['site'],
-                    dry_run=False
-                )
+            logging.info(f"Successfully created device {device['hostname']} in FireMon with ID: {fm_device['id']}")
 
         except Exception as e:
-            logging.error(f"Error creating device {device['hostname']}: {str(e)}")
+            error_msg = f"Error creating device {device['hostname']}: {str(e)}"
+            logging.error(error_msg)
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.exception("Detailed error trace:")
+            with self._changes_lock:
+                self.changes['devices'].append({
+                    'device': device['hostname'],
+                    'action': 'error',
+                    'error': error_msg,
+                    'details': {
+                        'type': 'creation_error',
+                        'exception_type': type(e).__name__
+                    }
+                })
             raise
 
     def _sync_licenses_parallel(self) -> None:
@@ -716,6 +778,7 @@ class SyncManager:
         """
         try:
             updates_needed = []
+            changes_made = False
 
             # Only check device pack and collector group if doing full sync
             if self.config_manager.sync_config.sync_mode == 'full':
@@ -758,26 +821,33 @@ class SyncManager:
                         update_data['collectorGroupId'] = expected_collector
 
                     self.firemon.update_device(fm_device['id'], update_data)
+                    changes_made = True
 
-            # Only sync specific components based on sync mode
-            if self.config_manager.sync_config.sync_mode in ['full', 'configs']:
-                if self.config_manager.sync_config.enable_config_sync:
-                    self._sync_device_configs(nb_device, fm_device)
-
-            if self.config_manager.sync_config.sync_mode in ['full', 'licenses']:
-                if self.config_manager.sync_config.enable_license_sync:
-                    self._sync_device_licenses(fm_device)
-
-            if self.config_manager.sync_config.sync_mode in ['full', 'groups']:
-                if nb_device.get('site') and self.config_manager.sync_config.enable_group_sync:
-                    self.group_manager.sync_device_group_membership(
-                        fm_device['id'],
-                        nb_device['site'],
-                        dry_run=False
-                    )
+            # Track changes only if actual updates were made
+            if changes_made:
+                with self._changes_lock:
+                    self.changes['devices'].append({
+                        'device': nb_device['hostname'],
+                        'action': 'update',
+                        'status': 'success',
+                        'details': {
+                            'mgmt_ip': nb_device['mgmtIP'],
+                            'site': nb_device.get('site'),
+                            'type': nb_device['attributes'].get('subTypeName', 'N/A'),
+                            'device_pack': device_pack['device_name'],
+                            'updates_made': updates_needed  # List what was actually updated
+                        }
+                    })
+                    logging.info(f"Updated device {nb_device['hostname']} - Changes: {updates_needed}")
 
         except Exception as e:
             logging.error(f"Error updating device {nb_device['hostname']}: {str(e)}")
+            with self._changes_lock:
+                self.changes['devices'].append({
+                    'device': nb_device['hostname'],
+                    'action': 'error',
+                    'error': str(e)
+                })
             raise
 
     def _sync_device_configs(self, nb_device: Dict[str, Any], fm_device: Dict[str, Any]) -> None:

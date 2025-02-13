@@ -210,15 +210,51 @@ class FireMonClient:
             Created device data
             
         Raises:
-            FireMonAPIError: If device creation fails
+            FireMonAPIError: If device creation fails with detailed error information
         """
         url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/device')
         params = {'manualRetrieval': 'false'}
         
         try:
-            return self._request('POST', url, json=device_data, params=params)
+            # Log the request details
+            logging.debug(f"Creating device {device_data.get('name')} with payload: {json.dumps(device_data, indent=2)}")
+            
+            response = self.session.post(url, json=device_data, params=params)
+            
+            # If there's an error, try to get detailed error information
+            if not response.ok:
+                error_details = "Unknown error"
+                try:
+                    error_response = response.json()
+                    if isinstance(error_response, dict):
+                        error_details = error_response.get('message', error_response.get('error', str(error_response)))
+                    else:
+                        error_details = str(error_response)
+                except Exception as json_err:
+                    error_details = response.text or str(response.reason)
+                
+                error_msg = (
+                    f"Failed to create device {device_data.get('name')}: "
+                    f"Status {response.status_code} - {error_details}"
+                )
+                logging.error(error_msg)
+                logging.error(f"Request URL: {url}")
+                logging.error(f"Request Headers: {response.request.headers}")
+                
+                raise FireMonAPIError(error_msg)
+            
+            result = response.json()
+            logging.info(f"Successfully created device {device_data.get('name')} with ID {result.get('id')}")
+            return result
+            
+        except requests.exceptions.RequestException as e:
+            error_msg = f"API request failed: {str(e)}"
+            logging.error(error_msg)
+            raise FireMonAPIError(error_msg)
         except Exception as e:
-            raise FireMonAPIError(f"Error creating device: {str(e)}")
+            error_msg = f"Unexpected error creating device: {str(e)}"
+            logging.error(error_msg)
+            raise FireMonError(error_msg)
 
     def import_device_config(self, device_id: int, files: Dict[str, str], 
                            change_user: str = 'NetBrain') -> Dict[str, Any]:
