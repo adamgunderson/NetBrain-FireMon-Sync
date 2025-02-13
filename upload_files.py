@@ -3,6 +3,11 @@
 SFTP Upload Script for Logs and Reports
 Uploads contents of logs/ and reports/ directories to a remote SFTP server
 Maintains directory structure and handles errors gracefully
+
+Requirements for Python 3.6:
+pip install 'paramiko<3.0.0' 'cryptography<37.0.0' python-dotenv
+
+These specific versions maintain compatibility with Python 3.6
 """
 
 import os
@@ -102,7 +107,7 @@ class SFTPUploader:
 
     def upload_file(self, local_path: str, remote_path: str) -> bool:
         """
-        Upload a single file to SFTP server
+        Upload a single file to SFTP server with overwrite
         
         Args:
             local_path: Local file path
@@ -115,6 +120,15 @@ class SFTPUploader:
             # Ensure remote directory exists
             remote_dir = os.path.dirname(remote_path)
             self.ensure_remote_dir(remote_dir)
+            
+            # Remove existing file if it exists
+            try:
+                self.sftp.remove(remote_path)
+                logging.debug(f"Removed existing file: {remote_path}")
+            except FileNotFoundError:
+                pass  # File doesn't exist, which is fine
+            except Exception as e:
+                logging.warning(f"Could not remove existing file {remote_path}: {str(e)}")
             
             # Upload file
             self.sftp.put(local_path, remote_path)
@@ -164,6 +178,7 @@ def main():
     """Main entry point for SFTP upload script"""
     # Load environment variables from .env file
     load_dotenv()
+    
     # Get SFTP credentials from environment variables
     hostname = os.getenv('SFTP_HOST')
     username = os.getenv('SFTP_USER')

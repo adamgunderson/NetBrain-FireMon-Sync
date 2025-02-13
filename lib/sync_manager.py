@@ -239,6 +239,7 @@ class SyncManager:
                             fm_devices: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         """
         Calculate the difference between NetBrain and FireMon devices
+        Performs case-insensitive hostname matching to prevent duplicates
         Only includes devices that have mappings configured in sync-mappings.yaml
         
         Args:
@@ -258,13 +259,13 @@ class SyncManager:
         configured_device_types = self.config_manager.get_mapped_device_types()
         logging.debug(f"Configured device types: {sorted(configured_device_types)}")
         
-        # Filter NetBrain devices to only include configured types
+        # Create case-insensitive dictionaries for both systems
         nb_by_hostname = {
-            d['hostname']: d for d in nb_devices 
+            d['hostname'].lower(): d for d in nb_devices 
             if d['attributes'].get('subTypeName') in configured_device_types
         }
         
-        fm_by_hostname = {d['name']: d for d in fm_devices}
+        fm_by_hostname = {d['name'].lower(): d for d in fm_devices}
         
         delta = {
             'only_in_netbrain': [],
@@ -274,10 +275,10 @@ class SyncManager:
         }
 
         # Find devices only in NetBrain (only for configured device types)
-        for hostname, nb_device in nb_by_hostname.items():
-            if hostname not in fm_by_hostname:
+        for hostname_lower, nb_device in nb_by_hostname.items():
+            if hostname_lower not in fm_by_hostname:
                 delta['only_in_netbrain'].append({
-                    'hostname': hostname,
+                    'hostname': nb_device['hostname'],  # Use original case
                     'mgmt_ip': nb_device['mgmtIP'],
                     'site': nb_device.get('site', 'N/A'),
                     'type': nb_device['attributes'].get('subTypeName', 'N/A'),
@@ -287,8 +288,8 @@ class SyncManager:
                 })
 
         # Find devices only in FireMon
-        for hostname, fm_device in fm_by_hostname.items():
-            if hostname not in nb_by_hostname:
+        for hostname_lower, fm_device in fm_by_hostname.items():
+            if hostname_lower not in nb_by_hostname:
                 # Get device pack info - try both devicePack structure and direct fields
                 device_pack = (
                     fm_device.get('devicePack', {}).get('deviceName') or 
@@ -298,13 +299,10 @@ class SyncManager:
 
                 # Handle lastRevision timestamp
                 last_revision = fm_device.get('lastRevision')
-                if isinstance(last_revision, str) and last_revision.strip():
-                    last_revision_display = last_revision
-                else:
-                    last_revision_display = 'N/A'
+                last_revision_display = last_revision if isinstance(last_revision, str) and last_revision.strip() else 'N/A'
                 
                 delta['only_in_firemon'].append({
-                    'hostname': hostname,
+                    'hostname': fm_device['name'],  # Use original case
                     'mgmt_ip': fm_device.get('managementIp', 'N/A'),
                     'collector_group': fm_device.get('collectorGroupName', 'N/A'),
                     'device_pack': device_pack,
@@ -312,9 +310,9 @@ class SyncManager:
                     'last_retrieval': last_revision_display
                 })
 
-        # Compare devices that exist in both systems
-        for hostname, nb_device in nb_by_hostname.items():
-            fm_device = fm_by_hostname.get(hostname)
+        # Compare devices that exist in both systems (using case-insensitive matching)
+        for hostname_lower, nb_device in nb_by_hostname.items():
+            fm_device = fm_by_hostname.get(hostname_lower)
             if fm_device:
                 # Get enhanced device pack based on all attributes
                 nb_type = nb_device['attributes'].get('subTypeName', 'N/A')
@@ -342,7 +340,7 @@ class SyncManager:
                     if not fm_vendor:
                         fm_vendor = fm_device.get('vendor')
 
-                    logging.debug(f"Device {hostname} - FM Type: {fm_type}, FM Vendor: {fm_vendor}, "
+                    logging.debug(f"Device {nb_device['hostname']} - FM Type: {fm_type}, FM Vendor: {fm_vendor}, "
                                 f"Expected Type: {device_pack['device_name']}, "
                                 f"Expected Vendor: {device_pack['fm_vendor']}")
 
@@ -380,17 +378,14 @@ class SyncManager:
 
                 # Handle lastRevision timestamp for devices with differences
                 last_revision = fm_device.get('lastRevision')
-                if isinstance(last_revision, str) and last_revision.strip():
-                    last_revision_display = last_revision
-                else:
-                    last_revision_display = 'N/A'
+                last_revision_display = last_revision if isinstance(last_revision, str) and last_revision.strip() else 'N/A'
 
                 if differences:
                     # When adding to different list, include both possible sources of device pack info
                     device_pack_info = (fm_device.get('devicePack', {}).get('deviceName') or 
                                     fm_device.get('product', 'N/A'))
                     delta['different'].append({
-                        'hostname': hostname,
+                        'hostname': nb_device['hostname'],  # Use original case from NetBrain
                         'differences': differences,
                         'netbrain_data': {
                             'mgmt_ip': nb_device['mgmtIP'],
@@ -410,7 +405,7 @@ class SyncManager:
                     })
                 else:
                     delta['matching'].append({
-                        'hostname': hostname,
+                        'hostname': nb_device['hostname'],  # Use original case from NetBrain
                         'mgmt_ip': nb_device['mgmtIP'],
                         'site': nb_device.get('site', 'N/A'),
                         'type': nb_device['attributes'].get('subTypeName', 'N/A'),
@@ -427,6 +422,15 @@ class SyncManager:
         skipped_types = {d['attributes'].get('subTypeName') for d in nb_devices} - configured_device_types
         if skipped_types:
             logging.debug(f"Skipped unconfigured device types: {sorted(skipped_types)}")
+
+        # Log case differences found for matching devices
+        case_differences = [(nb_by_hostname[h]['hostname'], fm_by_hostname[h]['name']) 
+                           for h in set(nb_by_hostname) & set(fm_by_hostname)
+                           if nb_by_hostname[h]['hostname'] != fm_by_hostname[h]['name']]
+        if case_differences:
+            logging.info("Found case differences in device names:")
+            for nb_name, fm_name in case_differences:
+                logging.info(f"  NetBrain: {nb_name} / FireMon: {fm_name}")
 
         return delta
 
