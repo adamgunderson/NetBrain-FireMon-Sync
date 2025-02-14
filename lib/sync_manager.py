@@ -854,13 +854,67 @@ class SyncManager:
                 })
             raise
 
+    def _process_config_content(self, device_hostname: str, config_type: str, content: str) -> str:
+    """
+    Process configuration content before importing to FireMon
+    Handles trimming and cleanup of configs with detailed logging
+    
+    Args:
+        device_hostname: Device hostname for logging
+        config_type: Type of configuration (e.g., 'running-config', 'interfaces')
+        content: Raw configuration content
+        
+    Returns:
+        Processed configuration content
+    """
+    if not content:
+        logging.warning(f"Empty config content received for {device_hostname} - {config_type}")
+        return content
+        
+    # Log original content length and first few lines
+    original_lines = content.splitlines()
+    logging.debug(f"Original config for {device_hostname} - {config_type}")
+    logging.debug(f"Total lines: {len(original_lines)}")
+    logging.debug("First 5 lines:")
+    for i, line in enumerate(original_lines[:5]):
+        logging.debug(f"  {i+1}: {line}")
+
+    # Trim first line and any leading/trailing whitespace
+    processed_lines = original_lines[1:] if len(original_lines) > 1 else original_lines
+    processed_content = '\n'.join(processed_lines).strip()
+
+    # Log processed content details
+    processed_line_count = len(processed_content.splitlines())
+    logging.debug(f"Processed config for {device_hostname} - {config_type}")
+    logging.debug(f"Total lines after processing: {processed_line_count}")
+    logging.debug("First 5 lines after processing:")
+    for i, line in enumerate(processed_content.splitlines()[:5]):
+        logging.debug(f"  {i+1}: {line}")
+
+    # Log size difference
+    original_size = len(content)
+    processed_size = len(processed_content)
+    logging.debug(f"Config size change for {device_hostname} - {config_type}: "
+                 f"Original={original_size} bytes, Processed={processed_size} bytes")
+
+    return processed_content
+
     def _sync_device_configs(self, nb_device: Dict[str, Any], fm_device: Dict[str, Any]) -> None:
-        """Sync device configurations"""
+        """
+        Sync device configurations with enhanced logging and config processing
+        
+        Args:
+            nb_device: NetBrain device dictionary
+            fm_device: FireMon device dictionary
+        """
         try:
+            hostname = nb_device['hostname']
+            logging.info(f"Starting config sync for device {hostname}")
+
             # Get NetBrain config time
             nb_config_time = self.netbrain.get_device_config_time(nb_device['id'])
             if not nb_config_time:
-                logging.warning(f"No configuration timestamp found for device {nb_device['hostname']}")
+                logging.warning(f"No configuration timestamp found for device {hostname}")
                 return
 
             # Get FireMon config time
@@ -868,38 +922,99 @@ class SyncManager:
             fm_revision = self.firemon.get_device_revision(fm_device['id'])
             if fm_revision:
                 fm_config_time = fm_revision.get('completeDate')
+                logging.info(f"Found existing FireMon config for {hostname} from {fm_config_time}")
 
             # Compare timestamps
             if not fm_config_time or TimestampUtil.is_newer_than(nb_config_time, fm_config_time):
+                logging.info(f"Newer config found in NetBrain for {hostname} - "
+                            f"NB: {nb_config_time}, FM: {fm_config_time or 'None'}")
+
+                # Get configs from NetBrain
                 configs = self.netbrain.get_device_configs(nb_device['id'])
-                if configs:
-                    mapped_configs = self.config_handler.process_device_configs(nb_device, configs)
-                    self.config_handler.backup_configs(nb_device, mapped_configs)
-                    
-                    self.firemon.import_device_config(
-                        fm_device['id'],
-                        mapped_configs,
-                        change_user='NetBrain'
-                    )
-                    
-                    with self._changes_lock:
-                        self.changes['configs'].append({
-                            'device': nb_device['hostname'],
-                            'action': 'update',
-                            'status': 'success',
-                            'details': {
-                                'nb_time': nb_config_time,
-                                'fm_time': fm_config_time
-                            }
-                        })
+                if not configs:
+                    logging.warning(f"No configurations retrieved from NetBrain for {hostname}")
+                    return
+
+                logging.info(f"Retrieved {len(configs)} config sections from NetBrain for {hostname}")
+                
+                # Process and map configs
+                processed_configs = {}
+                for command, content in configs.items():
+                    try:
+                        # Map the command to FireMon filename
+                        fm_filename = self.config_manager.map_netbrain_command_to_firemon_file(
+                            nb_device['attributes']['subTypeName'],
+                            command
+                        )
+                        
+                        if fm_filename:
+                            # Process the config content
+                            processed_content = self._process_config_content(hostname, command, content)
+                            processed_configs[fm_filename] = processed_content
+                            
+                            logging.info(f"Processed config for {hostname} - Command: {command} -> "
+                                       f"File: {fm_filename}")
+                        else:
+                            logging.warning(f"No FireMon file mapping found for command '{command}' "
+                                          f"on device {hostname}")
+                            
+                    except Exception as e:
+                        logging.error(f"Error processing config section {command} for {hostname}: {str(e)}")
+
+                if processed_configs:
+                    try:
+                        # Backup configs before import
+                        self.config_handler.backup_configs(nb_device, processed_configs)
+                        logging.info(f"Backed up {len(processed_configs)} config files for {hostname}")
+
+                        # Import to FireMon
+                        result = self.firemon.import_device_config(
+                            fm_device['id'],
+                            processed_configs,
+                            change_user='NetBrain'
+                        )
+                        
+                        logging.info(f"Successfully imported {len(processed_configs)} config files "
+                                   f"to FireMon for {hostname}")
+                        logging.debug(f"Import result for {hostname}: {result}")
+
+                        with self._changes_lock:
+                            self.changes['configs'].append({
+                                'device': hostname,
+                                'action': 'update',
+                                'status': 'success',
+                                'details': {
+                                    'nb_time': nb_config_time,
+                                    'fm_time': fm_config_time,
+                                    'files_imported': list(processed_configs.keys())
+                                }
+                            })
+
+                    except Exception as e:
+                        error_msg = f"Error importing configs to FireMon for {hostname}: {str(e)}"
+                        logging.error(error_msg)
+                        with self._changes_lock:
+                            self.changes['configs'].append({
+                                'device': hostname,
+                                'action': 'update',
+                                'status': 'error',
+                                'error': error_msg
+                            })
+                else:
+                    logging.warning(f"No valid configs to import for {hostname}")
+
+            else:
+                logging.info(f"FireMon config is up to date for {hostname} - "
+                            f"FM: {fm_config_time}, NB: {nb_config_time}")
 
         except Exception as e:
-            logging.error(f"Error syncing configs for device {nb_device['hostname']}: {str(e)}")
+            error_msg = f"Error in config sync for {nb_device['hostname']}: {str(e)}"
+            logging.error(error_msg)
             with self._changes_lock:
                 self.changes['configs'].append({
                     'device': nb_device['hostname'],
                     'action': 'error',
-                    'error': str(e)
+                    'error': error_msg
                 })
 
     def _sync_device_licenses(self, fm_device: Dict[str, Any]) -> None:
