@@ -855,58 +855,68 @@ class SyncManager:
             raise
 
     def _process_config_content(self, device_hostname: str, config_type: str, content: str) -> str:
-    """
-    Process configuration content before importing to FireMon
-    Handles trimming and cleanup of configs with detailed logging
-    
-    Args:
-        device_hostname: Device hostname for logging
-        config_type: Type of configuration (e.g., 'running-config', 'interfaces')
-        content: Raw configuration content
+        """
+        Process configuration content before importing to FireMon
+        Handles trimming and cleanup of configs with detailed logging
         
-    Returns:
-        Processed configuration content
-    """
-    if not content:
-        logging.warning(f"Empty config content received for {device_hostname} - {config_type}")
-        return content
-        
-    # Log original content length and first few lines
-    original_lines = content.splitlines()
-    logging.debug(f"Original config for {device_hostname} - {config_type}")
-    logging.debug(f"Total lines: {len(original_lines)}")
-    logging.debug("First 5 lines:")
-    for i, line in enumerate(original_lines[:5]):
-        logging.debug(f"  {i+1}: {line}")
+        Args:
+            device_hostname: Device hostname for logging
+            config_type: Type of configuration (e.g., 'running-config', 'interfaces')
+            content: Raw configuration content
+            
+        Returns:
+            Processed configuration content
+        """
+        if not content:
+            logging.warning(f"Empty config content received for {device_hostname} - {config_type}")
+            return content
+            
+        # Log original content length and first few lines
+        original_lines = content.splitlines()
+        logging.debug(f"Original config for {device_hostname} - {config_type}")
+        logging.debug(f"Total lines: {len(original_lines)}")
+        logging.debug("First 5 lines:")
+        for i, line in enumerate(original_lines[:5]):
+            logging.debug(f"  {i+1}: {line}")
 
-    # Trim first line and any leading/trailing whitespace
-    processed_lines = original_lines[1:] if len(original_lines) > 1 else original_lines
-    processed_content = '\n'.join(processed_lines).strip()
+        # Trim first line and any leading/trailing whitespace
+        processed_lines = original_lines[1:] if len(original_lines) > 1 else original_lines
+        processed_content = '\n'.join(processed_lines).strip()
 
-    # Log processed content details
-    processed_line_count = len(processed_content.splitlines())
-    logging.debug(f"Processed config for {device_hostname} - {config_type}")
-    logging.debug(f"Total lines after processing: {processed_line_count}")
-    logging.debug("First 5 lines after processing:")
-    for i, line in enumerate(processed_content.splitlines()[:5]):
-        logging.debug(f"  {i+1}: {line}")
+        # Log processed content details
+        processed_line_count = len(processed_content.splitlines())
+        logging.debug(f"Processed config for {device_hostname} - {config_type}")
+        logging.debug(f"Total lines after processing: {processed_line_count}")
+        logging.debug("First 5 lines after processing:")
+        for i, line in enumerate(processed_content.splitlines()[:5]):
+            logging.debug(f"  {i+1}: {line}")
 
-    # Log size difference
-    original_size = len(content)
-    processed_size = len(processed_content)
-    logging.debug(f"Config size change for {device_hostname} - {config_type}: "
-                 f"Original={original_size} bytes, Processed={processed_size} bytes")
+        # Log size difference
+        original_size = len(content)
+        processed_size = len(processed_content)
+        logging.debug(f"Config size change for {device_hostname} - {config_type}: "
+                     f"Original={original_size} bytes, Processed={processed_size} bytes")
 
-    return processed_content
+        return processed_content
 
     def _sync_device_configs(self, nb_device: Dict[str, Any], fm_device: Dict[str, Any]) -> None:
         """
-        Sync device configurations with enhanced logging and config processing
+        Sync device configurations with enhanced logging and config processing.
+        Only processes devices that have mappings defined in sync-mappings.yaml
         
         Args:
             nb_device: NetBrain device dictionary
             fm_device: FireMon device dictionary
         """
+        # Get device type from NetBrain device
+        device_type = nb_device.get('attributes', {}).get('subTypeName')
+        hostname = nb_device['hostname']
+        
+        # Check if device type is mapped
+        mapped_device_types = self.config_manager.get_mapped_device_types()
+        if not device_type or device_type not in mapped_device_types:
+            logging.info(f"Skipping config sync for {hostname} - Device type {device_type} not mapped in sync-mappings.yaml")
+            return
         try:
             hostname = nb_device['hostname']
             logging.info(f"Starting config sync for device {hostname}")
