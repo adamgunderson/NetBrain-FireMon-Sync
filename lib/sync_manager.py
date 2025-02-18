@@ -530,12 +530,24 @@ class SyncManager:
                 })
 
     def _sync_device_configs(self, nb_device: Dict[str, Any], fm_device: Dict[str, Any]) -> None:
-        """Sync device configurations between systems"""
+        """
+        Sync device configurations between systems using hostname
+        
+        Args:
+            nb_device: NetBrain device dictionary
+            fm_device: FireMon device dictionary
+        """
         try:
             hostname = nb_device['hostname']
             
-            # Get config times
-            nb_config_time = self.netbrain.get_device_config_time(nb_device['id'])
+            # Get device details from NetBrain with proper attributes
+            device_details = self.netbrain.get_device_details(hostname)
+            if not device_details:
+                logging.warning(f"Could not get device details for {hostname}")
+                return
+
+            # Get config times 
+            nb_config_time = device_details['attributes'].get('lDiscoveryTime')
             if not nb_config_time:
                 logging.warning(f"No configuration timestamp found for device {hostname}")
                 return
@@ -548,41 +560,75 @@ class SyncManager:
                 logging.info(f"Configuration update needed for {hostname}")
                 
                 # Get configs from NetBrain
-                configs = self.netbrain.get_device_configs(nb_device['id'])
-                if not configs:
-                    logging.warning(f"No configurations retrieved from NetBrain for {hostname}")
+                device_type = device_details['attributes'].get('subTypeName')
+                if not device_type:
+                    logging.warning(f"No device type found for device {hostname}")
                     return
 
-                # Log configs being uploaded when in debug mode
-                from .logger import log_config_details
-                if logging.getLogger().isEnabledFor(logging.DEBUG):
-                    log_config_details(hostname, configs)
+                command_mappings = self.config_manager.get_config_file_mapping(device_type)
+                if not command_mappings:
+                    logging.warning(f"No command mappings found for device type {device_type}")
+                    return
 
-                # Import to FireMon
-                result = self.firemon.import_device_config(
-                    fm_device['id'],
-                    configs,
-                    change_user='NetBrain'
-                )
-
-                with self._changes_lock:
-                    self.changes['configs'].append({
-                        'device': hostname,
-                        'action': 'update',
-                        'status': 'success',
-                        'details': {
-                            'nb_time': nb_config_time,
-                            'fm_time': fm_config_time,
-                            'files_updated': list(configs.keys())
+                configs = {}
+                for command in command_mappings.keys():
+                    try:
+                        # Use Device Raw Data API to get command output
+                        url = urljoin(self.netbrain.host, '/ServicesAPI/API/V1/CMDB/Devices/DeviceRawData')
+                        params = {
+                            'hostname': hostname,
+                            'dataType': 2,  # CLI command result
+                            'cmd': command
                         }
-                    })
+
+                        response = self.netbrain._request('GET', url, params=params)
+                        if response.get('statusCode') == 790200:  # Success
+                            content = response.get('content', '')
+                            if content:
+                                configs[command] = self.netbrain._process_command_output(content, command)
+                                logging.debug(f"Successfully retrieved command '{command}' for device {hostname}")
+                            else:
+                                logging.warning(f"Empty content received for command '{command}' on device {hostname}")
+                        else:
+                            logging.warning(f"Failed to get command '{command}' for device {hostname}: {response.get('statusDescription')}")
+
+                    except Exception as e:
+                        logging.error(f"Error getting command '{command}' for device {hostname}: {str(e)}")
+                        continue
+
+                if configs:
+                    # Log configs being uploaded when in debug mode
+                    from .logger import log_config_details
+                    if logging.getLogger().isEnabledFor(logging.DEBUG):
+                        log_config_details(hostname, configs)
+
+                    # Import to FireMon
+                    result = self.firemon.import_device_config(
+                        fm_device['id'],
+                        configs,
+                        change_user='NetBrain'
+                    )
+
+                    with self._changes_lock:
+                        self.changes['configs'].append({
+                            'device': hostname,
+                            'action': 'update',
+                            'status': 'success',
+                            'details': {
+                                'nb_time': nb_config_time,
+                                'fm_time': fm_config_time,
+                                'files_updated': list(configs.keys())
+                            }
+                        })
+                else:
+                    logging.warning(f"No configurations retrieved for device {hostname}")
 
         except Exception as e:
-            error_msg = f"Error syncing configs for device {nb_device['hostname']}: {str(e)}"
+            error_msg = f"Error syncing configs for device {hostname}: {str(e)}"
             logging.error(error_msg)
             with self._changes_lock:
                 self.changes['configs'].append({
-                    'device': nb_device['hostname'],
+                    'device': hostname,
                     'action': 'error',
                     'error': error_msg
                 })

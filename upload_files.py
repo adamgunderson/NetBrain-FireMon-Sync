@@ -4,10 +4,10 @@ SFTP Upload Script for Logs and Reports
 Uploads contents of logs/ and reports/ directories to a remote SFTP server
 Maintains directory structure and handles errors gracefully
 
-Requirements for Python 3.6:
-pip install 'paramiko<2.9.0' 'cryptography<3.4' 'bcrypt<4.0.0' python-dotenv
+Requirements for Python 3.9:
+pip install paramiko python-dotenv
 
-These specific versions maintain compatibility with Python 3.6
+The script is compatible with all recent versions of these packages when using Python 3.9
 """
 
 import os

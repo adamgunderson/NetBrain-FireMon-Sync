@@ -1,11 +1,11 @@
 # lib/netbrain.py
 
 """
-NetBrain API Client - Updated to use V1 Device Raw Data API
+NetBrain API Client - Updated to use Attributes and Device Raw Data APIs
 Handles all interactions with the NetBrain API including:
 - Authentication and token management 
-- Device inventory retrieval
-- Configuration management using V1 Device Raw Data API
+- Device inventory retrieval and attribute lookup
+- Configuration management using Device Raw Data API
 - Content processing to remove shell prompts
 - Site hierarchy management
 - Error handling and request retries
@@ -150,6 +150,194 @@ class NetBrainClient:
             logging.error(f"Error validating token: {str(e)}")
             return False
 
+    def get_device_details(self, hostname: str) -> Optional[Dict[str, Any]]:
+        """
+        Get device details using the Attributes API endpoint
+        
+        Args:
+            hostname: Device hostname
+            
+        Returns:
+            Device dictionary or None if not found
+            
+        Example response:
+        {
+            'name': 'device1',
+            'mgmtIP': '10.0.0.1',
+            'site': 'My Network/Site1',
+            'attributes': {
+                'subTypeName': 'Cisco IOS Switch',
+                'vendor': 'Cisco',
+                'model': 'Catalyst 3750',
+                'ver': '12.2(55)SE',
+                'mgmtIntf': 'Vlan1'
+            }
+        }
+        """
+        # Check cache first
+        cache_key = f"device_{hostname}"
+        if cache_key in self._device_cache:
+            return self._device_cache[cache_key]
+
+        url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/Attributes')
+        params = {'hostname': hostname}
+        
+        try:
+            logging.debug(f"Getting device details for hostname: {hostname}")
+            response = self._request('GET', url, params=params)
+            
+            if response.get('statusCode') == 790200:  # Success
+                device_data = {
+                    'name': response.get('hostname'),
+                    'mgmtIP': response.get('attributes', {}).get('mgmtIP'),
+                    'site': response.get('attributes', {}).get('site', 'Unassigned'),
+                    'attributes': response.get('attributes', {})
+                }
+                
+                # Cache the result
+                self._device_cache[cache_key] = device_data
+                return device_data
+                
+            logging.warning(f"Device {hostname} not found: {response.get('statusDescription')}")
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error getting device details for {hostname}: {str(e)}")
+            return None
+
+    def _get_device_by_id(self, device_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get device details by looking up hostname in Attributes API
+        Uses caching to reduce API calls
+        
+        Args:
+            device_id: NetBrain device ID (used only for cache key)
+            
+        Returns:
+            Device dictionary or None if not found
+        """
+        # Check cache first
+        if device_id in self._device_cache:
+            return self._device_cache[device_id]
+
+        # First get device details from inventory to get hostname
+        url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/Inventory')
+        params = {'id': device_id}
+        
+        try:
+            inv_response = self._request('GET', url, params=params)
+            if inv_response.get('statusCode') != 790200:
+                logging.warning(f"Device {device_id} not found in inventory")
+                return None
+
+            hostname = inv_response.get('device', {}).get('name')
+            if not hostname:
+                logging.warning(f"No hostname found for device ID {device_id}")
+                return None
+
+            # Now get full device details from Attributes API
+            device_data = self.get_device_details(hostname)
+            if device_data:
+                # Cache with device ID as key
+                self._device_cache[device_id] = device_data
+            return device_data
+            
+        except Exception as e:
+            logging.error(f"Error getting device details for ID {device_id}: {str(e)}")
+            return None
+
+    def get_device_configs(self, hostname: str) -> Dict[str, str]:
+        """
+        Get device configuration data using the Device Raw Data API
+        
+        Args:
+            hostname: Device hostname
+            
+        Returns:
+            Dictionary mapping commands to their outputs
+            
+        Raises:
+            NetBrainAPIError: If API request fails
+            NetBrainError: For other errors during config retrieval
+        """
+        configs = {}
+        
+        try:
+            # Get device details to get device type
+            device = self.get_device_details(hostname)
+            if not device:
+                raise NetBrainError(f"Device not found with hostname {hostname}")
+
+            # Get device type and command mappings
+            device_type = device['attributes'].get('subTypeName')
+            if not device_type:
+                raise NetBrainError(f"No device type found for device {hostname}")
+
+            command_mappings = self.config_manager.get_config_file_mapping(device_type)
+            if not command_mappings:
+                logging.warning(f"No command mappings found for device type {device_type}")
+                return configs
+
+            # Fetch each command using the Device Raw Data API
+            for command in command_mappings.keys():
+                try:
+                    url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/DeviceRawData')
+                    params = {
+                        'hostname': hostname,
+                        'dataType': 2,  # CLI command result
+                        'cmd': command
+                    }
+
+                    response = self._request('GET', url, params=params)
+                    
+                    if response.get('statusCode') == 790200:  # Success
+                        content = response.get('content', '')
+                        if content:
+                            # Process the content to remove prompts and commands
+                            processed_content = self._process_command_output(content, command)
+                            configs[command] = processed_content
+                            logging.debug(f"Successfully retrieved command '{command}' for device {hostname}")
+                        else:
+                            logging.warning(f"Empty content received for command '{command}' on device {hostname}")
+                    else:
+                        logging.warning(f"Failed to get command '{command}' for device {hostname}: {response.get('statusDescription')}")
+
+                except Exception as e:
+                    logging.error(f"Error getting command '{command}' for device {hostname}: {str(e)}")
+                    continue
+
+            return configs
+            
+        except Exception as e:
+            error_msg = f"Error getting device configs: {str(e)}"
+            logging.error(error_msg)
+            raise NetBrainError(error_msg)
+
+    def get_device_config_time(self, hostname: str) -> Optional[str]:
+        """
+        Get timestamp of last configuration update
+        
+        Args:
+            hostname: Device hostname
+            
+        Returns:
+            ISO format timestamp string or None if not found
+        """
+        try:
+            device = self.get_device_details(hostname)
+            if not device:
+                return None
+
+            last_discovery = device['attributes'].get('lDiscoveryTime')
+            if last_discovery and last_discovery != '0001-01-01T00:00:00Z':
+                return last_discovery
+
+            return None
+
+        except Exception as e:
+            logging.error(f"Error getting config time for device {hostname}: {str(e)}")
+            return None
+
     def _process_command_output(self, content: str, command: str) -> str:
         """
         Process command output to remove shell prompts and command strings
@@ -194,7 +382,7 @@ class NetBrainClient:
 
     def get_all_devices(self) -> List[Dict[str, Any]]:
         """
-        Get all devices from NetBrain using the Inventory List API
+        Get all devices from NetBrain using the Attributes API
         Filters devices based on device type mappings in config
         
         Returns:
@@ -203,143 +391,60 @@ class NetBrainClient:
         Raises:
             NetBrainError: If ConfigManager is not provided or API errors occur
         """
-        logging.debug("Getting all devices from NetBrain inventory")
+        logging.debug("Getting all devices from NetBrain")
         
         if not self.config_manager:
             raise NetBrainError("ConfigManager required for device type filtering")
             
         all_devices = []
         device_types = self.config_manager.get_mapped_device_types()
-        
-        for device_type in device_types:
-            try:
-                devices = self._get_devices_by_type(device_type)
-                all_devices.extend(devices)
-            except Exception as e:
-                logging.error(f"Error getting devices for type {device_type}: {str(e)}")
-                continue
-        
-        total_devices = len(all_devices)        
-        logging.info(f"Retrieved {total_devices} total devices from NetBrain")
-        
-        # Add detailed device logging if in debug mode
-        from .logger import log_device_details
-        log_device_details(all_devices)
-        
-        return all_devices
-
-    def get_device_configs(self, device_id: str) -> Dict[str, str]:
-        """
-        Get device configuration data using the V1 Device Raw Data API
-        
-        Args:
-            device_id: NetBrain device ID
-            
-        Returns:
-            Dictionary mapping commands to their outputs
-            
-        Raises:
-            NetBrainAPIError: If API request fails
-            NetBrainError: For other errors during config retrieval
-        """
-        configs = {}
+        skip = 0
         
         try:
-            # Get device details first to get hostname
-            device = self._get_device_by_id(device_id)
-            if not device:
-                raise NetBrainError(f"Device not found with ID {device_id}")
-
-            hostname = device.get('name')
-            if not hostname:
-                raise NetBrainError(f"No hostname found for device ID {device_id}")
-
-            # Get device type and command mappings
-            device_type = device.get('attributes', {}).get('subTypeName')
-            if not device_type:
-                raise NetBrainError(f"No device type found for device {hostname}")
-
-            command_mappings = self.config_manager.get_config_file_mapping(device_type)
-            if not command_mappings:
-                logging.warning(f"No command mappings found for device type {device_type}")
-                return configs
-
-            # Fetch each command using the V1 Device Raw Data API
-            for command in command_mappings.keys():
-                try:
-                    # Build API URL with parameters
-                    url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/DeviceRawData')
-                    params = {
-                        'hostname': hostname,
-                        'dataType': 2,  # CLI command result
-                        'cmd': command
-                    }
-
-                    response = self._request('GET', url, params=params)
+            while True:
+                url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices')
+                params = {
+                    'skip': skip,
+                    'limit': 100,
+                    'full': True
+                }
+                
+                response = self._request('GET', url, params=params)
+                devices = response.get('devices', [])
+                
+                if not devices:
+                    break
                     
-                    if response.get('statusCode') == 790200:  # Success
-                        content = response.get('content', '')
-                        if content:
-                            # Process the content to remove prompts and commands
-                            processed_content = self._process_command_output(content, command)
-                            configs[command] = processed_content
-                            logging.debug(f"Successfully retrieved command '{command}' for device {hostname}")
-                        else:
-                            logging.warning(f"Empty content received for command '{command}' on device {hostname}")
-                    else:
-                        logging.warning(f"Failed to get command '{command}' for device {hostname}: {response.get('statusDescription')}")
+                # Filter and process devices
+                for device in devices:
+                    try:
+                        device_type = device.get('subTypeName')
+                        if device_type in device_types:
+                            # Get full device details including attributes
+                            details = self.get_device_details(device['name'])
+                            if details:
+                                all_devices.append(details)
+                                
+                    except Exception as e:
+                        logging.error(f"Error processing device {device.get('name', 'UNKNOWN')}: {str(e)}")
+                        continue
+                
+                skip += len(devices)
+                if len(devices) < 100:
+                    break
+                    
+            logging.info(f"Retrieved {len(all_devices)} total devices from NetBrain")
 
-                except Exception as e:
-                    logging.error(f"Error getting command '{command}' for device {hostname}: {str(e)}")
-                    continue
-
-            return configs
+            # Add detailed device logging if in debug mode
+            from .logger import log_device_details
+            log_device_details(all_devices)
+            
+            return all_devices
             
         except Exception as e:
-            error_msg = f"Error getting device configs: {str(e)}"
+            error_msg = f"Error retrieving devices: {str(e)}"
             logging.error(error_msg)
             raise NetBrainError(error_msg)
-
-    def get_device_config_time(self, device_id: str) -> Optional[str]:
-        """
-        Get timestamp of last configuration update using V1 Device Raw Data API
-        
-        Args:
-            device_id: NetBrain device ID
-            
-        Returns:
-            ISO format timestamp string or None if not found
-        """
-        try:
-            # Get device details to get hostname
-            device = self._get_device_by_id(device_id)
-            if not device:
-                return None
-
-            hostname = device.get('name')
-            if not hostname:
-                return None
-
-            # Use Device Raw Data API to get config timestamp
-            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/DeviceRawData')
-            params = {
-                'hostname': hostname,
-                'dataType': 2,
-                'cmd': 'show running-config'  # Use a common command to check timestamp
-            }
-
-            response = self._request('GET', url, params=params)
-            if response.get('statusCode') == 790200:
-                retrieval_time = response.get('retrievalTime')
-                if retrieval_time and retrieval_time != '0001-01-01T00:00:00':
-                    return retrieval_time
-                logging.warning(f"Invalid retrieval time for device {hostname}: {retrieval_time}")
-
-            return None
-
-        except Exception as e:
-            logging.error(f"Error getting config time for device {device_id}: {str(e)}")
-            return None
 
     def get_sites(self) -> List[Dict[str, Any]]:
         """
@@ -361,158 +466,6 @@ class NetBrainClient:
         except Exception as e:
             logging.error(f"Error getting sites: {str(e)}")
             raise
-
-    def get_device_attributes(self, hostname: str) -> Dict[str, Any]:
-        """
-        Get detailed device attributes
-        
-        Args:
-            hostname: Device hostname
-            
-        Returns:
-            Dictionary of device attributes
-            
-        Raises:
-            NetBrainAPIError: If API request fails
-        """
-        url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/Attributes')
-        params = {'hostname': hostname}
-        
-        try:
-            response = self._request('GET', url, params=params)
-            return response['attributes']
-        except Exception as e:
-            logging.error(f"Error getting attributes for device {hostname}: {str(e)}")
-            raise
-
-    def _get_devices_by_type(self, device_type: str) -> List[Dict[str, Any]]:
-        """
-        Get devices of a specific type using the CMDB API
-        
-        Args:
-            device_type: Device type to search for
-                
-        Returns:
-            List of device dictionaries
-                
-        Raises:
-            NetBrainAPIError: If API request fails
-        """
-        url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices')
-        devices = []
-        skip = 0
-        
-        # Create filter for device type
-        device_filter = {
-            'subTypeName': device_type
-        }
-        
-        try:
-            while True:
-                params = {
-                    'version': '1',
-                    'skip': skip,
-                    'fullattr': '1',
-                    'filter': json.dumps(device_filter)
-                }
-                
-                logging.debug(f"Retrieving devices with skip={skip} for type {device_type}")
-                
-                response = self._request('GET', url, params=params)
-                batch_data = response.get('devices', [])
-                
-                if not batch_data:
-                    break
-                    
-                count = len(batch_data)
-                devices.extend(self._parse_device_data(batch_data))
-                
-                logging.debug(f"Retrieved {count} devices in current batch for type {device_type}")
-                
-                if count < 50:
-                    break
-                    
-                skip += count
-
-            logging.info(f"Retrieved total of {len(devices)} devices of type {device_type}")
-            return devices
-            
-        except Exception as e:
-            error_msg = f"Error retrieving devices of type {device_type}: {str(e)}"
-            logging.error(error_msg)
-            raise NetBrainAPIError(error_msg)
-
-    def _parse_device_data(self, devices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Parse device data from inventory API response into standard format
-        
-        Args:
-            devices: Raw device data from API
-            
-        Returns:
-            List of normalized device dictionaries
-        """
-        parsed_devices = []
-        for device in devices:
-            try:
-                parsed = {
-                    'id': device.get('id'),
-                    'hostname': device.get('name'),
-                    'mgmtIP': device.get('mgmtIP'),
-                    'site': device.get('site'),
-                    'attributes': {
-                        'vendor': device.get('vendor'),
-                        'model': device.get('model'), 
-                        'subTypeName': device.get('subTypeName'),
-                        'version': device.get('ver'),
-                        'serialNumber': device.get('sn'),
-                        'contact': device.get('contact'),
-                        'location': device.get('loc'),
-                        'login_alias': device.get('login_alias'),
-                        'mgmtIntf': device.get('mgmtIntf'),
-                        'lastDiscoveryTime': device.get('lDiscoveryTime')
-                    }
-                }
-                
-                if any(parsed.values()) or any(parsed['attributes'].values()):
-                    parsed_devices.append(parsed)
-                else:
-                    logging.warning(f"Skipping device with no valid data: {device}")
-                    
-            except Exception as e:
-                logging.error(f"Error parsing device data: {str(e)}")
-                continue
-                
-        return parsed_devices
-
-    def _get_device_by_id(self, device_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get device details by ID
-        Uses caching to reduce API calls
-        
-        Args:
-            device_id: NetBrain device ID
-            
-        Returns:
-            Device dictionary or None if not found
-        """
-        # Check cache first
-        if device_id in self._device_cache:
-            return self._device_cache[device_id]
-
-        url = urljoin(self.host, f'/ServicesAPI/API/V1/CMDB/Devices/{device_id}')
-        try:
-            response = self._request('GET', url)
-            if response.get('statusCode') == 790200:
-                device = response.get('device')
-                if device:
-                    # Cache the result
-                    self._device_cache[device_id] = device
-                return device
-            return None
-        except Exception as e:
-            logging.error(f"Error getting device by ID {device_id}: {str(e)}")
-            return None
 
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """
@@ -602,9 +555,9 @@ class NetBrainClient:
         logging.debug("Cleared all caches")
 
     @lru_cache(maxsize=1024)
-    def _get_device_configs(self, device_id: str) -> Dict[str, str]:
+    def _get_device_configs(self, hostname: str) -> Dict[str, str]:
         """Cached method to get device configurations"""
-        return self.get_device_configs(device_id)
+        return self.get_device_configs(hostname)
 
     def __enter__(self):
         """Context manager entry"""
