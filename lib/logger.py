@@ -5,6 +5,7 @@ Handles setup of application logging with support for:
 - Console output
 - Main log file with rotation
 - Separate debug log file for device/group details
+- Separate debug log file for configuration content
 - Multiple log levels
 - Enhanced debug formatting
 """
@@ -16,8 +17,9 @@ from datetime import datetime
 from typing import Optional
 from pathlib import Path
 
-# Create a custom logger for device and group debug info
+# Create custom loggers for detail tracking
 debug_logger = logging.getLogger('debug_details')
+config_logger = logging.getLogger('config_details')
 
 def setup_logging(level: Optional[str] = None) -> None:
     """
@@ -80,8 +82,9 @@ def setup_logging(level: Optional[str] = None) -> None:
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
     
-    # Setup debug details logger if in DEBUG mode
+    # Setup debug and config loggers if in DEBUG mode
     if level == 'DEBUG':
+        # Debug details logger setup
         debug_log_path = Path(log_dir) / 'debug_details.log'
         debug_formatter = logging.Formatter(
             '%(asctime)s - %(message)s',
@@ -96,8 +99,25 @@ def setup_logging(level: Optional[str] = None) -> None:
         debug_handler.setFormatter(debug_formatter)
         debug_logger.addHandler(debug_handler)
         debug_logger.setLevel(logging.DEBUG)
+
+        # Config details logger setup
+        config_log_path = Path(log_dir) / 'config_details.log'
+        config_formatter = logging.Formatter(
+            '%(asctime)s - %(message)s\n',  # Add newline for better config readability
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        
+        config_handler = RotatingFileHandler(
+            config_log_path,
+            maxBytes=max_bytes,
+            backupCount=backup_count
+        )
+        config_handler.setFormatter(config_formatter)
+        config_logger.addHandler(config_handler)
+        config_logger.setLevel(logging.DEBUG)
         
         logging.info(f"Debug details logging enabled to {debug_log_path}")
+        logging.info(f"Config details logging enabled to {config_log_path}")
     
     # Initial log messages
     logging.info(f"Logging initialized at {level} level")
@@ -136,3 +156,21 @@ def log_group_details(groups: list) -> None:
                 f"ID: {group.get('id', 'N/A')} "
                 f"Parent: {group.get('parentId', 'N/A')}"
             )
+
+def log_config_details(hostname: str, configs: dict) -> None:
+    """
+    Log configuration content being uploaded to FireMon
+    
+    Args:
+        hostname: Device hostname
+        configs: Dictionary mapping filenames to config content
+    """
+    if config_logger.handlers:
+        config_logger.debug(f"Configuration upload for device: {hostname}")
+        config_logger.debug("=" * 80)
+        
+        for filename, content in configs.items():
+            config_logger.debug(f"Filename: {filename}")
+            config_logger.debug("-" * 40)
+            config_logger.debug(content)
+            config_logger.debug("=" * 80)
