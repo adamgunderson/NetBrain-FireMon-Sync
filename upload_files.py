@@ -5,7 +5,7 @@ Uploads contents of logs/ and reports/ directories to a remote SFTP server
 Maintains directory structure and handles errors gracefully
 
 Requirements for Python 3.6:
-pip install 'paramiko<3.0.0' 'cryptography<37.0.0' python-dotenv
+pip install 'paramiko<2.9.0' 'cryptography<3.4' 'bcrypt<4.0.0' python-dotenv
 
 These specific versions maintain compatibility with Python 3.6
 """

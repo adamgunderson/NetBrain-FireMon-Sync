@@ -2,6 +2,7 @@
 """
 Configuration management for the NetBrain to FireMon sync service
 Handles loading and validation of configuration from environment variables
+Includes enhanced handling of commented out device packs and mappings
 """
 
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ class SyncConfig:
     sync_mode: str  # 'full', 'groups', 'licenses', 'configs', 'devices'
     sync_interval_minutes: int
     continuous_sync: bool
-    remove_missing_devices: bool  # New flag to control device removal
+    remove_missing_devices: bool  # Flag to control device removal
     
     @classmethod
     def from_env(cls):
@@ -89,9 +90,26 @@ class ConfigManager:
             logging.error(error_msg)
             raise RuntimeError(error_msg)
 
+    def is_device_pack_active(self, device_pack: Optional[Dict[str, Any]]) -> bool:
+        """
+        Check if a device pack mapping is active (not commented out)
+        
+        Args:
+            device_pack: Device pack mapping dictionary
+            
+        Returns:
+            bool: True if device pack is active, False if commented out
+        """
+        if not device_pack:
+            return False
+            
+        # Check if any required fields have values
+        required_fields = ['artifact_id', 'group_id', 'device_type', 'device_name']
+        return any(device_pack.get(field) for field in required_fields)
+
     def get_mapped_device_types(self) -> Set[str]:
         """
-        Get all device types that have mappings defined
+        Get all device types that have active (non-commented) mappings defined
         
         Returns:
             Set of device type strings
@@ -102,18 +120,16 @@ class ConfigManager:
 
         device_types = set()
         
-        # Get device types from device pack mappings
+        # Get device types from device pack mappings that are not commented out
         device_pack_mappings = self.mappings.get('device_pack_mapping', {})
-        device_types.update(device_pack_mappings.keys())
-        
-        # Also check config file mappings for additional device types
-        config_file_mappings = self.mappings.get('config_file_mapping', {})
-        device_types.update(config_file_mappings.keys())
+        for device_type, mapping in device_pack_mappings.items():
+            if self.is_device_pack_active(mapping):
+                device_types.add(device_type)
         
         # Cache the result
         self._device_type_cache = device_types
         
-        logging.debug(f"Found {len(device_types)} mapped device types: {sorted(device_types)}")
+        logging.debug(f"Found {len(device_types)} active mapped device types: {sorted(device_types)}")
         return device_types
 
     def get_collector_group_id(self, site: str) -> Optional[str]:
@@ -164,6 +180,11 @@ class ConfigManager:
             Device pack configuration or None if no match found
         """
         try:
+            # Skip lookup for non-mapped device types
+            if device_type not in self.get_mapped_device_types():
+                logging.debug(f"Device type {device_type} is not mapped or commented out")
+                return None
+
             device_packs = self.mappings.get('device_pack_mapping', {})
             device_pack = device_packs.get(device_type)
             
@@ -179,7 +200,8 @@ class ConfigManager:
             vendor_normalized = vendor.lower()
             
             # Look for partial matches in vendor name
-            if not (nb_vendor_normalized in vendor_normalized or vendor_normalized in nb_vendor_normalized):
+            if not (nb_vendor_normalized in vendor_normalized or 
+                   vendor_normalized in nb_vendor_normalized):
                 logging.warning(f"Vendor mismatch for device type {device_type}: "
                               f"expected {device_pack.get('nb_vendor')}, got {vendor}")
                 return None
@@ -193,7 +215,8 @@ class ConfigManager:
             for pattern in device_pack['model_patterns']:
                 try:
                     if re.match(pattern, model, re.IGNORECASE):
-                        logging.debug(f"Model {model} matches pattern {pattern} for device type {device_type}")
+                        logging.debug(f"Model {model} matches pattern {pattern} "
+                                    f"for device type {device_type}")
                         return device_pack
                 except re.error as e:
                     logging.error(f"Invalid regex pattern '{pattern}' for device type {device_type}: {str(e)}")
@@ -218,6 +241,9 @@ class ConfigManager:
             Expected FireMon vendor name or None if not found
         """
         for device_pack in self.mappings.get('device_pack_mapping', {}).values():
+            # Skip commented out device packs
+            if not self.is_device_pack_active(device_pack):
+                continue
             if device_pack.get('nb_vendor') == netbrain_vendor:
                 return device_pack.get('fm_vendor')
         return None
@@ -225,20 +251,22 @@ class ConfigManager:
     def get_device_pack(self, device_type: str) -> Optional[Dict[str, Any]]:
         """
         Get FireMon device pack config for a NetBrain device type
+        Skip warning for commented out device packs
         
         Args:
             device_type: NetBrain device type
             
         Returns:
-            Device pack configuration or None if not found
+            Device pack configuration or None if not found or commented out
         """
         device_pack = self.mappings.get('device_pack_mapping', {}).get(device_type)
         
-        if not device_pack:
-            logging.warning(f"No device pack mapping found for device type: {device_type}")
+        # Skip warning if device pack is commented out
+        if not self.is_device_pack_active(device_pack):
+            logging.debug(f"Device pack for {device_type} is commented out or not configured")
             return None
-        
-        # Validate required fields
+
+        # For active device packs, validate required fields    
         required_fields = ['artifact_id', 'group_id', 'device_type', 'device_name']
         missing_fields = [field for field in required_fields if field not in device_pack]
         
@@ -258,20 +286,15 @@ class ConfigManager:
         Returns:
             Dictionary mapping commands to file names
         """
-        # Default mappings for common commands
-        default_mapping = {
-            'show configuration': 'config_xml',
-            'show interfaces': 'interfaces_xml',
-            'show version': 'version_xml'
-        }
-        
+        # Only get mappings for active device types
+        if device_type not in self.get_mapped_device_types():
+            logging.debug(f"No config file mappings for commented out device type: {device_type}")
+            return {}
+
         # Get custom mappings for this device type
         custom_mapping = self.mappings.get('config_file_mapping', {}).get(device_type, {})
-        
-        # Merge default and custom mappings, with custom taking precedence
-        mapping = {**default_mapping, **custom_mapping}
-        logging.debug(f"Config file mapping for {device_type}: {mapping}")
-        return mapping
+        logging.debug(f"Config file mapping for {device_type}: {custom_mapping}")
+        return custom_mapping
 
     def get_default_settings(self) -> Dict[str, Any]:
         """
@@ -305,30 +328,6 @@ class ConfigManager:
         
         # Remove None values
         return {k: v for k, v in merged_settings.items() if v is not None}
-
-    def map_netbrain_command_to_firemon_file(self, device_type: str, command: str) -> Optional[str]:
-        """
-        Map NetBrain command output to FireMon config filename
-        
-        Args:
-            device_type: NetBrain device type
-            command: Command string
-            
-        Returns:
-            FireMon filename or None if no mapping found
-        """
-        mapping = self.get_config_file_mapping(device_type)
-        
-        # Handle complex mappings (e.g., Juniper route types)
-        if isinstance(mapping.get(command), dict):
-            logging.debug(f"Complex mapping found for command '{command}' on device type {device_type}")
-            return mapping[command]
-        
-        result = mapping.get(command)
-        if not result:
-            logging.debug(f"No file mapping found for command '{command}' on device type {device_type}")
-            
-        return result
 
     def get_site_hierarchy_mapping(self) -> Dict[str, List[str]]:
         """Get mapping of parent-child relationships for site hierarchy"""
@@ -382,6 +381,11 @@ class ConfigManager:
         # Validate device pack mappings
         device_packs = self.mappings.get('device_pack_mapping', {})
         for device_type, pack in device_packs.items():
+            # Skip validation for commented out device packs
+            if not self.is_device_pack_active(pack):
+                logging.debug(f"Skipping validation for commented out device pack: {device_type}")
+                continue
+
             required_fields = [
                 'artifact_id', 'group_id', 'device_type', 'device_name',
                 'nb_vendor', 'fm_vendor', 'model_patterns'
@@ -432,8 +436,11 @@ class ConfigManager:
                                 'severity': 'error'
                             })
 
-        # Validate vendor mappings
+        # Validate vendor mappings for active device packs
         for device_type, pack in device_packs.items():
+            if not self.is_device_pack_active(pack):
+                continue
+                
             if 'nb_vendor' not in pack or 'fm_vendor' not in pack:
                 issues.append({
                     'type': 'missing_vendor_mapping',
@@ -466,18 +473,23 @@ class ConfigManager:
                 'severity': 'warning'
             })
         
-        # Validate config file mappings have corresponding device types
+        # Validate config file mappings have corresponding active device types
         config_mappings = self.mappings.get('config_file_mapping', {})
+        mapped_device_types = self.get_mapped_device_types()
         for device_type in config_mappings:
-            if device_type not in device_packs:
+            if device_type not in mapped_device_types:
                 issues.append({
                     'type': 'orphaned_config_mapping',
                     'device_type': device_type,
-                    'severity': 'warning'
+                    'severity': 'warning',
+                    'message': 'Config mapping exists for non-active device type'
                 })
 
-        # Validate command mappings
+        # Validate command mappings for active device types
         for device_type, commands in config_mappings.items():
+            if device_type not in mapped_device_types:
+                continue
+                
             if not isinstance(commands, dict):
                 issues.append({
                     'type': 'invalid_command_mapping',
