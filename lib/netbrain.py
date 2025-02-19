@@ -428,27 +428,28 @@ class NetBrainClient:
                         
                     # Normalize device data
                     normalized_devices = []
-                    for device in devices:
-                        normalized = {
-                            'id': device.get('id'),
-                            'hostname': device.get('name'),  # Map 'name' to 'hostname'
-                            'mgmtIP': device.get('mgmtIP'),
-                            'site': device.get('site'),
-                            'attributes': {
-                                'subTypeName': device.get('subTypeName'),
-                                'vendor': device.get('vendor'),
-                                'model': device.get('model'),
-                                'version': device.get('ver'),
-                                'serialNumber': device.get('sn'),
-                                'contact': device.get('contact'),
-                                'location': device.get('loc'),
-                                'mgmtIntf': device.get('mgmtIntf'),
-                                'lastDiscoveryTime': device.get('lDiscoveryTime', {}).get('$date')
-                                                   if isinstance(device.get('lDiscoveryTime'), dict) 
-                                                   else device.get('lDiscoveryTime')
+                        for device in devices:
+                            normalized = {
+                                'id': device.get('id'),
+                                'hostname': device.get('name'),  # Map 'name' to 'hostname'
+                                'mgmtIP': device.get('mgmtIP'),
+                                'site': device.get('site'),
+                                'attributes': {
+                                    'subTypeName': device.get('subTypeName'),
+                                    'vendor': device.get('vendor'),
+                                    'model': device.get('model'),
+                                    'version': device.get('ver'),
+                                    'serialNumber': device.get('sn'),
+                                    'contact': device.get('contact'),
+                                    'location': device.get('loc'),
+                                    'mgmtIntf': device.get('mgmtIntf'),
+                                    'lastDiscoveryTime': device.get('lDiscoveryTime', {}).get('$date')
+                                                       if isinstance(device.get('lDiscoveryTime'), dict) 
+                                                       else device.get('lDiscoveryTime')
+                                }
                             }
-                        }
-                        normalized_devices.append(normalized)
+                            logging.debug(f"Normalized device data: hostname={normalized['hostname']}, mgmtIP={normalized['mgmtIP']}")
+                            normalized_devices.append(normalized)
                     
                     all_devices.extend(normalized_devices)
                     processed_count = skip + len(devices)

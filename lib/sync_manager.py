@@ -258,7 +258,7 @@ class SyncManager:
                         fm_devices: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         """
         Calculate the difference between NetBrain and FireMon devices
-        Performs case-insensitive hostname matching to prevent duplicates
+        Performs matching using both hostname and IP address
         Only includes devices that have mappings configured in sync-mappings.yaml
         
         Args:
@@ -278,10 +278,24 @@ class SyncManager:
         configured_device_types = self.config_manager.get_mapped_device_types()
         logging.debug(f"Configured device types: {sorted(configured_device_types)}")
         
-        # Validate required fields and filter by configured device types
+        # Create both hostname and IP based lookups for FireMon devices
+        fm_by_hostname = {}
+        fm_by_ip = {}
+        processed_fm_devices = set()  # Track which FM devices we've processed
+        
+        for fm_device in fm_devices:
+            hostname = fm_device.get('name', '').lower()
+            mgmt_ip = fm_device.get('managementIp')
+            if hostname:
+                fm_by_hostname[hostname] = fm_device
+            if mgmt_ip:
+                fm_by_ip[mgmt_ip] = fm_device
+            logging.debug(f"FireMon device found: name={fm_device.get('name')}, IP={mgmt_ip}")
+
+        # Filter and validate NetBrain devices
         valid_nb_devices = []
         for device in nb_devices:
-            # Check required fields
+            # Skip if missing required fields
             if not device.get('hostname'):
                 logging.warning(f"Skipping NetBrain device missing hostname: {device}")
                 continue
@@ -296,13 +310,10 @@ class SyncManager:
             device_type = device['attributes']['subTypeName']
             if device_type in configured_device_types:
                 valid_nb_devices.append(device)
+                logging.debug(f"NetBrain device validated: hostname={device['hostname']}, IP={device['mgmtIP']}")
             else:
                 logging.debug(f"Skipping device {device['hostname']} with unconfigured type: {device_type}")
-        
-        # Create case-insensitive lookup dictionaries
-        nb_by_hostname = {d['hostname'].lower(): d for d in valid_nb_devices}
-        fm_by_hostname = {d['name'].lower(): d for d in fm_devices}
-        
+
         delta = {
             'only_in_netbrain': [],
             'only_in_firemon': [],
@@ -310,52 +321,41 @@ class SyncManager:
             'different': []
         }
 
-        # Find devices only in NetBrain
-        for hostname_lower, nb_device in nb_by_hostname.items():
-            if hostname_lower not in fm_by_hostname:
+        # Process each NetBrain device
+        for nb_device in valid_nb_devices:
+            hostname = nb_device['hostname'].lower()
+            mgmt_ip = nb_device['mgmtIP']
+            
+            # Try to find matching FireMon device by hostname or IP
+            fm_device = fm_by_hostname.get(hostname) or fm_by_ip.get(mgmt_ip)
+            
+            if not fm_device:
+                # Device only in NetBrain
+                logging.debug(f"Device {nb_device['hostname']} only found in NetBrain")
                 delta['only_in_netbrain'].append({
-                    'hostname': nb_device['hostname'],  # Use original case
-                    'mgmt_ip': nb_device['mgmtIP'],
+                    'hostname': nb_device['hostname'],
+                    'mgmt_ip': mgmt_ip,
                     'site': nb_device.get('site', 'N/A'),
                     'type': nb_device['attributes'].get('subTypeName', 'N/A'),
                     'vendor': nb_device['attributes'].get('vendor', 'N/A'),
                     'model': nb_device['attributes'].get('model', 'N/A'),
                     'version': nb_device['attributes'].get('version', 'N/A')
                 })
+            else:
+                # Mark this FireMon device as processed
+                if fm_device.get('name'):
+                    processed_fm_devices.add(fm_device['name'].lower())
+                if fm_device.get('managementIp'):
+                    processed_fm_devices.add(fm_device['managementIp'])
 
-        # Find devices only in FireMon
-        for hostname_lower, fm_device in fm_by_hostname.items():
-            if hostname_lower not in nb_by_hostname:
-                # Get device pack info - try both devicePack structure and direct fields
-                device_pack = (
-                    fm_device.get('devicePack', {}).get('deviceName') or 
-                    fm_device.get('product') or 
-                    'N/A'
-                )
-
-                # Handle lastRevision timestamp
-                last_revision = fm_device.get('lastRevision')
-                last_revision_display = last_revision if isinstance(last_revision, str) and last_revision.strip() else 'N/A'
+                # Device exists in both systems - check for differences
+                differences = []
                 
-                delta['only_in_firemon'].append({
-                    'hostname': fm_device['name'],  # Use original case
-                    'mgmt_ip': fm_device.get('managementIp', 'N/A'),
-                    'collector_group': fm_device.get('collectorGroupName', 'N/A'),
-                    'device_pack': device_pack,
-                    'status': fm_device.get('managedType', 'N/A'),
-                    'last_retrieval': last_revision_display
-                })
-
-        # Compare devices that exist in both systems (using case-insensitive matching)
-        for hostname_lower, nb_device in nb_by_hostname.items():
-            fm_device = fm_by_hostname.get(hostname_lower)
-            if fm_device:
                 # Get enhanced device pack based on all attributes
                 nb_type = nb_device['attributes'].get('subTypeName', 'N/A')
                 nb_model = nb_device['attributes'].get('model', 'N/A')
                 nb_vendor = nb_device['attributes'].get('vendor', 'N/A')
                 
-                differences = []
                 device_pack = self.config_manager.get_device_pack_by_attributes(
                     nb_type, nb_model, nb_vendor
                 )
@@ -376,19 +376,21 @@ class SyncManager:
                     if not fm_vendor:
                         fm_vendor = fm_device.get('vendor')
 
-                    logging.debug(f"Device {nb_device['hostname']} - FM Type: {fm_type}, FM Vendor: {fm_vendor}, "
-                                f"Expected Type: {device_pack['device_name']}, "
-                                f"Expected Vendor: {device_pack['fm_vendor']}")
+                    logging.debug(f"Device {nb_device['hostname']} comparison:"
+                                f"\n  FM Type: {fm_type}"
+                                f"\n  FM Vendor: {fm_vendor}"
+                                f"\n  Expected Type: {device_pack['device_name']}"
+                                f"\n  Expected Vendor: {device_pack.get('fm_vendor')}")
 
                     if fm_type != device_pack['device_name']:
                         differences.append(f"Device type mismatch: Expected={device_pack['device_name']}, "
                                         f"Actual={fm_type}")
                     
-                    if fm_vendor != device_pack['fm_vendor']:
+                    if device_pack.get('fm_vendor') and fm_vendor != device_pack['fm_vendor']:
                         differences.append(f"Vendor mismatch: Expected={device_pack['fm_vendor']}, "
                                         f"Actual={fm_vendor}")
 
-                    # Check model pattern match
+                    # Check model pattern match if configured
                     if 'model_patterns' in device_pack:
                         if not any(re.match(pattern, nb_model, re.IGNORECASE) 
                                  for pattern in device_pack['model_patterns']):
@@ -399,10 +401,11 @@ class SyncManager:
                                     f"model={nb_model}, vendor={nb_vendor}")
 
                 # Compare additional attributes
-                if nb_device['mgmtIP'] != fm_device.get('managementIp'):
-                    differences.append(f"Management IP mismatch: NB={nb_device['mgmtIP']}, "
+                if mgmt_ip != fm_device.get('managementIp'):
+                    differences.append(f"Management IP mismatch: NB={mgmt_ip}, "
                                     f"FM={fm_device.get('managementIp', 'N/A')}")
 
+                # Compare collector group if site is mapped
                 nb_site = nb_device.get('site', 'N/A')
                 if nb_site.startswith("My Network/"):
                     nb_site = nb_site[len("My Network/"):]
@@ -412,23 +415,24 @@ class SyncManager:
                     differences.append(f"Collector group mismatch: Expected={expected_collector}, "
                                     f"Actual={fm_device.get('collectorGroupId', 'N/A')}")
 
-                # Handle lastRevision timestamp for devices with differences
+                # Get revision information
                 last_revision = fm_device.get('lastRevision')
-                last_revision_display = last_revision if isinstance(last_revision, str) and last_revision.strip() else 'N/A'
+                last_revision_display = (last_revision if isinstance(last_revision, str) 
+                                       and last_revision.strip() else 'N/A')
 
                 if differences:
-                    # When adding to different list, include both possible sources of device pack info
+                    # Add device to different list with detailed comparison
                     device_pack_info = (fm_device.get('devicePack', {}).get('deviceName') or 
                                     fm_device.get('product', 'N/A'))
                     delta['different'].append({
-                        'hostname': nb_device['hostname'],  # Use original case from NetBrain
+                        'hostname': nb_device['hostname'],
                         'differences': differences,
                         'netbrain_data': {
-                            'mgmt_ip': nb_device['mgmtIP'],
+                            'mgmt_ip': mgmt_ip,
                             'site': nb_device.get('site', 'N/A'),
-                            'type': nb_device['attributes'].get('subTypeName', 'N/A'),
-                            'vendor': nb_device['attributes'].get('vendor', 'N/A'),
-                            'model': nb_device['attributes'].get('model', 'N/A'),
+                            'type': nb_type,
+                            'vendor': nb_vendor,
+                            'model': nb_model,
                             'version': nb_device['attributes'].get('version', 'N/A')
                         },
                         'firemon_data': {
@@ -439,34 +443,53 @@ class SyncManager:
                             'last_retrieval': last_revision_display
                         }
                     })
+                    logging.debug(f"Found differences for device {nb_device['hostname']}: {differences}")
                 else:
+                    # Devices match
                     delta['matching'].append({
-                        'hostname': nb_device['hostname'],  # Use original case from NetBrain
-                        'mgmt_ip': nb_device['mgmtIP'],
+                        'hostname': nb_device['hostname'],
+                        'mgmt_ip': mgmt_ip,
                         'site': nb_device.get('site', 'N/A'),
-                        'type': nb_device['attributes'].get('subTypeName', 'N/A'),
-                        'vendor': nb_device['attributes'].get('vendor', 'N/A'),
-                        'model': nb_device['attributes'].get('model', 'N/A')
+                        'type': nb_type,
+                        'vendor': nb_vendor,
+                        'model': nb_model
                     })
+                    logging.debug(f"Device {nb_device['hostname']} matches between systems")
 
-        # Log final counts
-        logging.info(f"Delta calculation complete. Found {len(delta['only_in_netbrain'])} devices only in NetBrain, "
-                    f"{len(delta['only_in_firemon'])} only in FireMon, {len(delta['different'])} with differences, "
-                    f"and {len(delta['matching'])} matching devices.")
-        
-        # Log skipped device types for debugging
-        skipped_types = {d.get('attributes', {}).get('subTypeName') for d in nb_devices} - configured_device_types
-        if skipped_types:
-            logging.debug(f"Skipped unconfigured device types: {sorted(skipped_types)}")
+        # Find devices only in FireMon
+        for fm_device in fm_devices:
+            hostname = fm_device.get('name', '').lower()
+            mgmt_ip = fm_device.get('managementIp')
+            
+            # Skip if we've already processed this device
+            if hostname in processed_fm_devices or mgmt_ip in processed_fm_devices:
+                continue
+                
+            # Get device pack info
+            device_pack = (fm_device.get('devicePack', {}).get('deviceName') or 
+                        fm_device.get('product') or 'N/A')
 
-        # Log case differences found for matching devices
-        case_differences = [(nb_by_hostname[h]['hostname'], fm_by_hostname[h]['name']) 
-                           for h in set(nb_by_hostname) & set(fm_by_hostname)
-                           if nb_by_hostname[h]['hostname'] != fm_by_hostname[h]['name']]
-        if case_differences:
-            logging.info("Found case differences in device names:")
-            for nb_name, fm_name in case_differences:
-                logging.info(f"  NetBrain: {nb_name} / FireMon: {fm_name}")
+            # Get revision information
+            last_revision = fm_device.get('lastRevision')
+            last_revision_display = (last_revision if isinstance(last_revision, str) 
+                                   and last_revision.strip() else 'N/A')
+            
+            delta['only_in_firemon'].append({
+                'hostname': fm_device.get('name', 'N/A'),
+                'mgmt_ip': mgmt_ip or 'N/A',
+                'collector_group': fm_device.get('collectorGroupName', 'N/A'),
+                'device_pack': device_pack,
+                'status': fm_device.get('managedType', 'N/A'),
+                'last_retrieval': last_revision_display
+            })
+            logging.debug(f"Device {fm_device.get('name')} only found in FireMon")
+
+        # Log summary statistics
+        logging.info(f"Delta calculation complete:"
+                    f"\n  {len(delta['only_in_netbrain'])} devices only in NetBrain"
+                    f"\n  {len(delta['only_in_firemon'])} devices only in FireMon"
+                    f"\n  {len(delta['different'])} devices with differences"
+                    f"\n  {len(delta['matching'])} matching devices")
 
         return delta
 
@@ -539,8 +562,28 @@ class SyncManager:
                 })
 
     def _create_device_with_configs(self, device: Dict[str, Any], device_pack: Dict[str, Any]) -> None:
-        """Create new device in FireMon with configurations"""
+        """
+        Create new device in FireMon with configurations
+        Includes enhanced error handling and validation
+        
+        Args:
+            device: NetBrain device dictionary
+            device_pack: Device pack configuration
+        """
         try:
+            # Validate required fields before attempting creation
+            required_fields = ['hostname', 'mgmtIP']
+            missing_fields = [field for field in required_fields if not device.get(field)]
+            if missing_fields:
+                raise ValueError(f"Missing required fields for device creation: {missing_fields}")
+                
+            # Validate device pack
+            required_pack_fields = ['artifact_id', 'group_id', 'device_type', 'device_name']
+            missing_pack_fields = [field for field in required_pack_fields if not device_pack.get(field)]
+            if missing_pack_fields:
+                raise ValueError(f"Missing required device pack fields: {missing_pack_fields}")
+
+            # Prepare device data following FireMon API structure
             device_data = {
                 "name": device['hostname'],
                 "managementIp": device['mgmtIP'],
@@ -549,11 +592,21 @@ class SyncManager:
                     "artifactId": device_pack['artifact_id'],
                     "groupId": device_pack['group_id'],
                     "deviceType": device_pack['device_type'],
-                    "deviceName": device_pack['device_name']
+                    "deviceName": device_pack['device_name'],
+                    "type": "DEVICE_PACK",  # Required type field
+                    "collectionConfig": {
+                        "name": "Default",
+                        "type": "COLLECTION_CONFIG"  # Required type field for collection config
+                    }
                 }
             }
 
+            # Add device description if available
+            if device.get('attributes', {}).get('description'):
+                device_data["description"] = device['attributes']['description']
+
             # Add collector group if site is mapped
+            collector_id = None
             if device.get('site'):
                 site = device['site']
                 if site.startswith("My Network/"):
@@ -561,33 +614,107 @@ class SyncManager:
                 collector_id = self.config_manager.get_collector_group_id(site)
                 if collector_id:
                     device_data['collectorGroupId'] = collector_id
+                else:
+                    logging.warning(f"No collector group mapping found for site: {site}")
 
-            # Add default settings
-            device_data.update(self.config_manager.get_default_settings())
-
-            # Create device in FireMon
-            fm_device = self.firemon.create_device(device_data)
+            # Validate credentials before adding them
+            username = os.getenv('DEFAULT_DEVICE_USERNAME')
+            password = os.getenv('DEFAULT_DEVICE_PASSWORD')
+            enable_password = os.getenv('DEFAULT_DEVICE_ENABLE_PASSWORD')
             
-            # Import configs if enabled
-            if self.config_manager.sync_config.enable_config_sync:
-                configs = self.netbrain.get_device_configs(device['id'])
-                if configs:
-                    self.firemon.import_device_config(
-                        fm_device['id'],
-                        configs,
-                        change_user='NetBrain'
-                    )
+            if not all([username, password]):
+                raise ValueError("Missing required device credentials in environment variables")
 
-            # Handle group membership
-            if device.get('site'):
-                self.group_manager.sync_device_group_membership(
-                    fm_device['id'],
-                    device['site']
-                )
+            # Get default settings from config manager
+            default_settings = self.config_manager.get_default_settings()
+
+            # Add extended settings
+            device_data["extendedSettingsJson"] = {
+                "retrievalMethod": "FromDevice",
+                "retrievalCallTimeOut": default_settings.get('retrievalCallTimeOut', 120),
+                "serverAliveInterval": default_settings.get('serverAliveInterval', 30),
+                "suppressFQDNCapabilities": default_settings.get('suppressFQDNCapabilities', False),
+                "useCLICommandGeneration": default_settings.get('useCLICommandGeneration', False),
+                "usePrivateConfig": False,
+                "logMonitoringEnabled": default_settings.get('logMonitoringEnabled', False),
+                "changeMonitoringEnabled": default_settings.get('changeMonitoringEnabled', False),
+                "scheduledRetrievalEnabled": default_settings.get('scheduledRetrievalEnabled', False),
+                "checkForChangeEnabled": default_settings.get('checkForChangeEnabled', False),
+                "skipRoute": False,
+                "encoding": "",
+                "batchConfigRetrieval": False,
+                "deprecatedCA": False,
+                "retrieveSetSyntaxConfig": False,
+                "skipApplicationFile": False,
+                "resetSSHKeyValue": False,
+                "routesFromConfig": False,
+                "authenticationMethod": "UserPassword",
+                "fallbackAuthentication": False,
+                "checkForChangeOnChangeDetection": False,
+                "username": username,
+                "password": password
+            }
+
+            # Add enable password if available
+            if enable_password:
+                device_data["extendedSettingsJson"]["enablePassword"] = enable_password
+
+            # Log creation attempt
+            logging.info(f"Creating device {device['hostname']} in FireMon")
+            logging.debug(f"Device creation payload for {device['hostname']}: {json.dumps(device_data, indent=2)}")
+            
+            try:
+                fm_device = self.firemon.create_device(device_data)
+                logging.info(f"Successfully created device {device['hostname']} in FireMon with ID: {fm_device['id']}")
+
+                # Track successful creation with FireMon device ID
+                with self._changes_lock:
+                    self.changes['devices'].append({
+                        'device': device['hostname'],
+                        'action': 'add',
+                        'status': 'success',
+                        'details': {
+                            'firemon_id': fm_device['id'],
+                            'mgmt_ip': device['mgmtIP'],
+                            'site': device.get('site'),
+                            'type': device['attributes'].get('subTypeName', 'N/A'),
+                            'device_pack': device_pack['device_name'],
+                            'collector_group': collector_id if collector_id else 'N/A'
+                        }
+                    })
+
+            except Exception as e:
+                error_msg = f"Failed to create device {device['hostname']}: {str(e)}"
+                logging.error(error_msg)
+                with self._changes_lock:
+                    self.changes['devices'].append({
+                        'device': device['hostname'],
+                        'action': 'error',
+                        'error': error_msg,
+                        'details': {
+                            'type': 'creation_error',
+                            'mgmt_ip': device['mgmtIP'],
+                            'site': device.get('site'),
+                            'device_pack': device_pack['device_name']
+                        }
+                    })
+                raise
 
         except Exception as e:
-            error_msg = f"Error creating device {device['hostname']}: {str(e)}"
+            error_msg = f"Unexpected error creating device {device['hostname']}: {str(e)}"
             logging.error(error_msg)
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.exception("Detailed error trace:")
+            with self._changes_lock:
+                self.changes['devices'].append({
+                    'device': device['hostname'],
+                    'action': 'error',
+                    'error': error_msg,
+                    'details': {
+                        'type': 'creation_error',
+                        'exception_type': type(e).__name__
+                    }
+                })
             raise
 
     def _update_device_if_needed(self, nb_device: Dict[str, Any], fm_device: Dict[str, Any],
