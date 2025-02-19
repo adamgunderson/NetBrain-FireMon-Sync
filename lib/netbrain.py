@@ -400,15 +400,15 @@ class NetBrainClient:
         device_types = self.config_manager.get_mapped_device_types()
         logging.debug(f"Configured device types: {sorted(device_types)}")
 
-        # Get devices of each configured type
+        # Get devices by type
         for device_type in device_types:
             try:
                 url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices')
                 skip = 0
-                limit = 50  # Reduced batch size to avoid large responses
+                limit = 50  # Use smaller batch size to avoid timeout issues
 
                 while True:
-                    # Build request parameters
+                    # Build API query parameters
                     params = {
                         'version': '1',
                         'skip': skip,
@@ -417,18 +417,26 @@ class NetBrainClient:
                         'filter': json.dumps({"subTypeName": device_type})
                     }
                     
-                    logging.debug(f"Retrieving devices for type {device_type} with skip={skip}")
-                    response = self._request('GET', url, params=params)
+                    logging.debug(f"Querying devices: type={device_type}, skip={skip}, limit={limit}")
                     
+                    # Make API request
+                    response = self._request('GET', url, params=params)
+                    if not response:
+                        logging.error(f"No response received for device type {device_type}")
+                        break
+                        
+                    # Get device batch and total count
                     devices = response.get('devices', [])
                     total_count = response.get('totalResultCount', 0)
                     
                     if not devices:
+                        logging.debug(f"No devices found for type {device_type}")
                         break
-                        
+
                     # Normalize device data
                     normalized_devices = []
-                        for device in devices:
+                    for device in devices:
+                        try:
                             normalized = {
                                 'id': device.get('id'),
                                 'hostname': device.get('name'),  # Map 'name' to 'hostname'
@@ -443,31 +451,68 @@ class NetBrainClient:
                                     'contact': device.get('contact'),
                                     'location': device.get('loc'),
                                     'mgmtIntf': device.get('mgmtIntf'),
+                                    'description': device.get('descr'),
                                     'lastDiscoveryTime': device.get('lDiscoveryTime', {}).get('$date')
                                                        if isinstance(device.get('lDiscoveryTime'), dict) 
                                                        else device.get('lDiscoveryTime')
                                 }
                             }
-                            logging.debug(f"Normalized device data: hostname={normalized['hostname']}, mgmtIP={normalized['mgmtIP']}")
+                            
+                            # Validate required fields
+                            if not normalized.get('hostname'):
+                                logging.warning(f"Skipping device with missing hostname: {device}")
+                                continue
+                                
+                            if not normalized.get('mgmtIP'):
+                                logging.warning(f"Skipping device {normalized['hostname']} with missing mgmtIP")
+                                continue
+                                
+                            if not normalized['attributes'].get('subTypeName'):
+                                logging.warning(f"Skipping device {normalized['hostname']} with missing subTypeName")
+                                continue
+                                
                             normalized_devices.append(normalized)
-                    
+                            logging.debug(f"Normalized device: hostname={normalized['hostname']}, "
+                                        f"IP={normalized['mgmtIP']}, type={normalized['attributes']['subTypeName']}")
+                                        
+                        except Exception as e:
+                            logging.error(f"Error normalizing device data: {str(e)}")
+                            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                                logging.error(f"Problem device data: {json.dumps(device, indent=2)}")
+                            continue
+
+                    # Add valid devices to result list
                     all_devices.extend(normalized_devices)
                     processed_count = skip + len(devices)
                     
-                    logging.info(f"Retrieved {len(devices)} {device_type} devices. "
+                    logging.info(f"Retrieved {len(normalized_devices)} {device_type} devices. "
                                f"Progress: {processed_count}/{total_count}")
                     
+                    # Check if we're done with this device type
                     if processed_count >= total_count or len(devices) < limit:
+                        logging.debug(f"Completed retrieval for device type {device_type}")
                         break
                         
                     skip += len(devices)
 
             except Exception as e:
                 logging.error(f"Error getting devices of type {device_type}: {str(e)}")
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    logging.exception("Detailed error trace:")
                 continue
         
         total_devices = len(all_devices)        
         logging.info(f"Retrieved {total_devices} total devices from NetBrain")
+        
+        # Log device type distribution
+        type_counts = {}
+        for device in all_devices:
+            device_type = device['attributes'].get('subTypeName', 'Unknown')
+            type_counts[device_type] = type_counts.get(device_type, 0) + 1
+        
+        logging.info("Device type distribution:")
+        for device_type, count in sorted(type_counts.items()):
+            logging.info(f"  {device_type}: {count}")
         
         # Add detailed device logging if in debug mode
         from .logger import log_device_details
