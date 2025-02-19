@@ -150,16 +150,16 @@ class NetBrainClient:
             logging.error(f"Error validating token: {str(e)}")
             return False
 
-    def get_device_details(self, hostname: str) -> Optional[Dict[str, Any]]:
+    def get_device_details(self, hostname_or_id: str) -> Optional[Dict[str, Any]]:
         """
         Get device details using the Attributes API endpoint
         
         Args:
-            hostname: Device hostname
-            
+            hostname_or_id: Device hostname or ID
+                
         Returns:
             Device dictionary or None if not found
-            
+                
         Example response:
         {
             'name': 'device1',
@@ -174,36 +174,60 @@ class NetBrainClient:
             }
         }
         """
-        # Check cache first
-        cache_key = f"device_{hostname}"
-        if cache_key in self._device_cache:
-            return self._device_cache[cache_key]
-
-        url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/Attributes')
-        params = {'hostname': hostname}
+        # Check if input looks like a UUID
+        is_uuid = len(hostname_or_id) == 36 and '-' in hostname_or_id
         
-        try:
-            logging.debug(f"Getting device details for hostname: {hostname}")
-            response = self._request('GET', url, params=params)
-            
-            if response.get('statusCode') == 790200:  # Success
-                device_data = {
-                    'name': response.get('hostname'),
-                    'mgmtIP': response.get('attributes', {}).get('mgmtIP'),
-                    'site': response.get('attributes', {}).get('site', 'Unassigned'),
-                    'attributes': response.get('attributes', {})
-                }
+        if is_uuid:
+            # If it's a UUID, use the Device API directly
+            url = urljoin(self.host, f'/ServicesAPI/API/V1/CMDB/Devices/{hostname_or_id}')
+            try:
+                response = self._request('GET', url)
+                if response.get('statusCode') == 790200:  # Success
+                    device = response.get('device', {})
+                    if device:
+                        return {
+                            'name': device.get('name'),
+                            'mgmtIP': device.get('mgmtIP'),
+                            'site': device.get('site'),
+                            'attributes': {
+                                'subTypeName': device.get('subTypeName'),
+                                'vendor': device.get('vendor'),
+                                'model': device.get('model'),
+                                'ver': device.get('ver'),
+                                'mgmtIntf': device.get('mgmtIntf'),
+                                'lDiscoveryTime': device.get('lDiscoveryTime')
+                            }
+                        }
+                return None
                 
-                # Cache the result
-                self._device_cache[cache_key] = device_data
-                return device_data
-                
-            logging.warning(f"Device {hostname} not found: {response.get('statusDescription')}")
-            return None
+            except Exception as e:
+                logging.error(f"Error getting device details for ID {hostname_or_id}: {str(e)}")
+                return None
+        else:
+            # If it's a hostname, use the Attributes API
+            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/Attributes')
+            params = {'hostname': hostname_or_id}
             
-        except Exception as e:
-            logging.error(f"Error getting device details for {hostname}: {str(e)}")
-            return None
+            try:
+                logging.debug(f"Getting device details for hostname: {hostname_or_id}")
+                response = self._request('GET', url, params=params)
+                
+                if response.get('statusCode') == 790200:  # Success
+                    device_data = {
+                        'name': response.get('hostname'),
+                        'mgmtIP': response.get('attributes', {}).get('mgmtIP'),
+                        'site': response.get('attributes', {}).get('site', 'Unassigned'),
+                        'attributes': response.get('attributes', {})
+                    }
+                    
+                    return device_data
+                    
+                logging.warning(f"Device {hostname_or_id} not found: {response.get('statusDescription')}")
+                return None
+                
+            except Exception as e:
+                logging.error(f"Error getting device details for {hostname_or_id}: {str(e)}")
+                return None
 
     def _get_device_by_id(self, device_id: str) -> Optional[Dict[str, Any]]:
         """
