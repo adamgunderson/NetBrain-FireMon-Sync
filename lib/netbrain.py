@@ -382,7 +382,7 @@ class NetBrainClient:
 
     def get_all_devices(self) -> List[Dict[str, Any]]:
         """
-        Get all devices from NetBrain using the Inventory List API
+        Get all devices from NetBrain using the Devices API
         Filters devices based on device type mappings in config
         
         Returns:
@@ -391,67 +391,64 @@ class NetBrainClient:
         Raises:
             NetBrainError: If ConfigManager is not provided or API errors occur
         """
-        logging.debug("Getting all devices from NetBrain inventory")
+        logging.debug("Getting all devices from NetBrain")
         
         if not self.config_manager:
             raise NetBrainError("ConfigManager required for device type filtering")
             
         all_devices = []
         device_types = self.config_manager.get_mapped_device_types()
-        skip = 0
-        page_size = 100
-        
-        try:
-            # First get total device count
-            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/Count')
-            response = self._request('GET', url)
-            total_count = response.get('count', 0)
-            logging.info(f"Total devices in NetBrain: {total_count}")
+        logging.debug(f"Configured device types: {sorted(device_types)}")
 
-            # Now get devices in batches
-            while skip < total_count:
+        # Get devices of each configured type
+        for device_type in device_types:
+            try:
                 url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices')
-                params = {
-                    'skip': skip,
-                    'limit': page_size,
-                    'full': True
-                }
-                
-                response = self._request('GET', url, params=params)
-                devices = response.get('devices', [])
-                
-                if not devices:
-                    break
+                skip = 0
+                limit = 50  # Reduced batch size to avoid large responses
+
+                while True:
+                    # Build request parameters
+                    params = {
+                        'version': '1',
+                        'skip': skip,
+                        'limit': limit,
+                        'fullattr': '1',
+                        'filter': json.dumps({"subTypeName": device_type})
+                    }
                     
-                # Filter devices by configured device types
-                filtered_devices = [
-                    device for device in devices
-                    if device.get('subTypeName') in device_types
-                ]
-                
-                all_devices.extend(filtered_devices)
-                
-                # Increment skip by actual number of devices received
-                skip += len(devices)
-                logging.debug(f"Retrieved {len(filtered_devices)} matching devices "
-                            f"from batch of {len(devices)} (Total so far: {len(all_devices)})")
-                
-                if len(devices) < page_size:
-                    break
+                    logging.debug(f"Retrieving devices for type {device_type} with skip={skip}")
+                    response = self._request('GET', url, params=params)
+                    
+                    devices = response.get('devices', [])
+                    total_count = response.get('totalResultCount', 0)
+                    
+                    if not devices:
+                        break
                         
-            total_devices = len(all_devices)        
-            logging.info(f"Retrieved {total_devices} total matching devices from NetBrain")
-            
-            # Add detailed device logging if in debug mode
-            from .logger import log_device_details
-            log_device_details(all_devices)
-            
-            return all_devices
-                
-        except Exception as e:
-            error_msg = f"Error retrieving devices: {str(e)}"
-            logging.error(error_msg)
-            raise NetBrainError(error_msg)
+                    all_devices.extend(devices)
+                    processed_count = skip + len(devices)
+                    
+                    logging.info(f"Retrieved {len(devices)} {device_type} devices. "
+                               f"Progress: {processed_count}/{total_count}")
+                    
+                    if processed_count >= total_count or len(devices) < limit:
+                        break
+                        
+                    skip += len(devices)
+
+            except Exception as e:
+                logging.error(f"Error getting devices of type {device_type}: {str(e)}")
+                continue
+        
+        total_devices = len(all_devices)        
+        logging.info(f"Retrieved {total_devices} total devices from NetBrain")
+        
+        # Add detailed device logging if in debug mode
+        from .logger import log_device_details
+        log_device_details(all_devices)
+        
+        return all_devices
 
     def get_sites(self) -> List[Dict[str, Any]]:
         """
