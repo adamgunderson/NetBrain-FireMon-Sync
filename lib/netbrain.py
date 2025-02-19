@@ -382,7 +382,7 @@ class NetBrainClient:
 
     def get_all_devices(self) -> List[Dict[str, Any]]:
         """
-        Get all devices from NetBrain using the Attributes API
+        Get all devices from NetBrain using the Inventory List API
         Filters devices based on device type mappings in config
         
         Returns:
@@ -391,7 +391,7 @@ class NetBrainClient:
         Raises:
             NetBrainError: If ConfigManager is not provided or API errors occur
         """
-        logging.debug("Getting all devices from NetBrain")
+        logging.debug("Getting all devices from NetBrain inventory")
         
         if not self.config_manager:
             raise NetBrainError("ConfigManager required for device type filtering")
@@ -399,13 +399,21 @@ class NetBrainClient:
         all_devices = []
         device_types = self.config_manager.get_mapped_device_types()
         skip = 0
+        page_size = 100
         
         try:
-            while True:
+            # First get total device count
+            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/Count')
+            response = self._request('GET', url)
+            total_count = response.get('count', 0)
+            logging.info(f"Total devices in NetBrain: {total_count}")
+
+            # Now get devices in batches
+            while skip < total_count:
                 url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices')
                 params = {
                     'skip': skip,
-                    'limit': 100,
+                    'limit': page_size,
                     'full': True
                 }
                 
@@ -415,32 +423,31 @@ class NetBrainClient:
                 if not devices:
                     break
                     
-                # Filter and process devices
-                for device in devices:
-                    try:
-                        device_type = device.get('subTypeName')
-                        if device_type in device_types:
-                            # Get full device details including attributes
-                            details = self.get_device_details(device['name'])
-                            if details:
-                                all_devices.append(details)
-                                
-                    except Exception as e:
-                        logging.error(f"Error processing device {device.get('name', 'UNKNOWN')}: {str(e)}")
-                        continue
+                # Filter devices by configured device types
+                filtered_devices = [
+                    device for device in devices
+                    if device.get('subTypeName') in device_types
+                ]
                 
+                all_devices.extend(filtered_devices)
+                
+                # Increment skip by actual number of devices received
                 skip += len(devices)
-                if len(devices) < 100:
+                logging.debug(f"Retrieved {len(filtered_devices)} matching devices "
+                            f"from batch of {len(devices)} (Total so far: {len(all_devices)})")
+                
+                if len(devices) < page_size:
                     break
-                    
-            logging.info(f"Retrieved {len(all_devices)} total devices from NetBrain")
-
+                        
+            total_devices = len(all_devices)        
+            logging.info(f"Retrieved {total_devices} total matching devices from NetBrain")
+            
             # Add detailed device logging if in debug mode
             from .logger import log_device_details
             log_device_details(all_devices)
             
             return all_devices
-            
+                
         except Exception as e:
             error_msg = f"Error retrieving devices: {str(e)}"
             logging.error(error_msg)
