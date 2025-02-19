@@ -37,11 +37,20 @@ class CodeUpdater:
         self.backup_dir = "backups"
         self.temp_dir = None
         
-        # Files to preserve during update
+        # Files and directories to preserve during update
         self.preserve_files = [
             '.env',
             'sync-mappings.yaml',
             'config.yaml'
+        ]
+        
+        # Directories to exclude from update process
+        self.exclude_dirs = [
+            'venv',
+            'env',
+            '.venv',
+            '.env',
+            '__pycache__'
         ]
         
     def create_backup(self) -> str:
@@ -58,9 +67,11 @@ class CodeUpdater:
             # Create backup directory
             os.makedirs(backup_path, exist_ok=True)
             
-            # Copy all files except backups directory
+            # Copy all files except backups directory and excluded directories
             for item in os.listdir('.'):
-                if item != self.backup_dir and not item.startswith('.'):
+                if (item != self.backup_dir and 
+                    not item.startswith('.') and 
+                    item not in self.exclude_dirs):
                     src = os.path.join('.', item)
                     dst = os.path.join(backup_path, item)
                     if os.path.isdir(src):
@@ -168,11 +179,12 @@ class CodeUpdater:
             # Preserve local files first
             self.preserve_local_files(source_dir)
             
-            # Remove old files (except preserved ones and backups)
+            # Remove old files (except preserved ones, excluded dirs, and backups)
             for item in os.listdir('.'):
                 if (item != self.backup_dir and 
                     not item.startswith('.') and 
-                    item not in self.preserve_files):
+                    item not in self.preserve_files and
+                    item not in self.exclude_dirs):
                     path = os.path.join('.', item)
                     if os.path.isdir(path):
                         shutil.rmtree(path)
@@ -183,12 +195,13 @@ class CodeUpdater:
             for item in os.listdir(source_dir):
                 src = os.path.join(source_dir, item)
                 dst = os.path.join('.', item)
-                if os.path.isdir(src):
-                    if os.path.exists(dst):
-                        shutil.rmtree(dst)
-                    shutil.copytree(src, dst)
-                else:
-                    if item not in self.preserve_files:  # Skip preserved files
+                # Skip excluded directories and preserved files
+                if item not in self.exclude_dirs and item not in self.preserve_files:
+                    if os.path.isdir(src):
+                        if os.path.exists(dst):
+                            shutil.rmtree(dst)
+                        shutil.copytree(src, dst)
+                    else:
                         shutil.copy2(src, dst)
                         
             logging.info("Code updated successfully")
