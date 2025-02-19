@@ -426,7 +426,31 @@ class NetBrainClient:
                     if not devices:
                         break
                         
-                    all_devices.extend(devices)
+                    # Normalize device data
+                    normalized_devices = []
+                    for device in devices:
+                        normalized = {
+                            'id': device.get('id'),
+                            'hostname': device.get('name'),  # Map 'name' to 'hostname'
+                            'mgmtIP': device.get('mgmtIP'),
+                            'site': device.get('site'),
+                            'attributes': {
+                                'subTypeName': device.get('subTypeName'),
+                                'vendor': device.get('vendor'),
+                                'model': device.get('model'),
+                                'version': device.get('ver'),
+                                'serialNumber': device.get('sn'),
+                                'contact': device.get('contact'),
+                                'location': device.get('loc'),
+                                'mgmtIntf': device.get('mgmtIntf'),
+                                'lastDiscoveryTime': device.get('lDiscoveryTime', {}).get('$date')
+                                                   if isinstance(device.get('lDiscoveryTime'), dict) 
+                                                   else device.get('lDiscoveryTime')
+                            }
+                        }
+                        normalized_devices.append(normalized)
+                    
+                    all_devices.extend(normalized_devices)
                     processed_count = skip + len(devices)
                     
                     logging.info(f"Retrieved {len(devices)} {device_type} devices. "
