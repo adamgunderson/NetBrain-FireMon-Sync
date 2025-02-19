@@ -1,29 +1,29 @@
-# upload_files.py
+# upload_files_curl.py
 """
-SFTP Upload Script for Logs and Reports
+SFTP Upload Script using curl for Logs and Reports
 Uploads contents of logs/ and reports/ directories to a remote SFTP server
-Maintains directory structure and handles errors gracefully
+Uses curl instead of paramiko for better compatibility
 
-Requirements for Python 3.9:
-pip install paramiko python-dotenv
-
-The script is compatible with all recent versions of these packages when using Python 3.9
+Requirements:
+- Python 3.9+
+- curl installed on system
+- python-dotenv
 """
 
 import os
 import sys
-import paramiko
+import subprocess
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 from dotenv import load_dotenv
 
-class SFTPUploader:
+class CurlSFTPUploader:
     def __init__(self, hostname: str, username: str, password: str, 
                  port: int = 22, remote_base: str = '/uploads'):
         """
-        Initialize SFTP uploader
+        Initialize SFTP uploader using curl
         
         Args:
             hostname: SFTP server hostname
@@ -37,8 +37,6 @@ class SFTPUploader:
         self.password = password
         self.port = port
         self.remote_base = remote_base
-        self.transport = None
-        self.sftp = None
         
         # Setup logging
         self._setup_logging()
@@ -55,59 +53,9 @@ class SFTPUploader:
             ]
         )
 
-    def connect(self) -> bool:
-        """
-        Establish SFTP connection
-        
-        Returns:
-            bool: True if connection successful, False otherwise
-        """
-        try:
-            self.transport = paramiko.Transport((self.hostname, self.port))
-            self.transport.connect(username=self.username, password=self.password)
-            self.sftp = paramiko.SFTPClient.from_transport(self.transport)
-            logging.info(f"Successfully connected to {self.hostname}")
-            return True
-        except Exception as e:
-            logging.error(f"Failed to connect to {self.hostname}: {str(e)}")
-            return False
-
-    def close(self):
-        """Close SFTP connection"""
-        try:
-            if self.sftp:
-                self.sftp.close()
-            if self.transport:
-                self.transport.close()
-            logging.info("SFTP connection closed")
-        except Exception as e:
-            logging.error(f"Error closing connection: {str(e)}")
-
-    def ensure_remote_dir(self, remote_path: str):
-        """
-        Ensure remote directory exists, create if needed
-        
-        Args:
-            remote_path: Remote directory path
-        """
-        try:
-            current_path = ''
-            for part in remote_path.split('/'):
-                if not part:
-                    continue
-                current_path += '/' + part
-                try:
-                    self.sftp.stat(current_path)
-                except FileNotFoundError:
-                    self.sftp.mkdir(current_path)
-                    logging.debug(f"Created remote directory: {current_path}")
-        except Exception as e:
-            logging.error(f"Error creating remote directory {remote_path}: {str(e)}")
-            raise
-
     def upload_file(self, local_path: str, remote_path: str) -> bool:
         """
-        Upload a single file to SFTP server with overwrite
+        Upload a single file using curl
         
         Args:
             local_path: Local file path
@@ -117,31 +65,39 @@ class SFTPUploader:
             bool: True if upload successful, False otherwise
         """
         try:
-            # Ensure remote directory exists
-            remote_dir = os.path.dirname(remote_path)
-            self.ensure_remote_dir(remote_dir)
+            # Construct curl command
+            curl_cmd = [
+                'curl',
+                '--insecure',  # Skip SSL verification
+                '-v',          # Verbose output for debugging
+                '-T',          # Upload file
+                local_path,    # Local file to upload
+                f'sftp://{self.hostname}:{self.port}/{remote_path}',
+                '--user',
+                f'{self.username}:{self.password}'
+            ]
             
-            # Remove existing file if it exists
-            try:
-                self.sftp.remove(remote_path)
-                logging.debug(f"Removed existing file: {remote_path}")
-            except FileNotFoundError:
-                pass  # File doesn't exist, which is fine
-            except Exception as e:
-                logging.warning(f"Could not remove existing file {remote_path}: {str(e)}")
+            # Run curl command
+            result = subprocess.run(
+                curl_cmd,
+                capture_output=True,
+                text=True
+            )
             
-            # Upload file
-            self.sftp.put(local_path, remote_path)
-            logging.info(f"Successfully uploaded {local_path} to {remote_path}")
-            return True
-            
+            if result.returncode == 0:
+                logging.info(f"Successfully uploaded {local_path} to {remote_path}")
+                return True
+            else:
+                logging.error(f"Failed to upload {local_path}: {result.stderr}")
+                return False
+                
         except Exception as e:
-            logging.error(f"Failed to upload {local_path}: {str(e)}")
+            logging.error(f"Error uploading {local_path}: {str(e)}")
             return False
 
     def upload_directory(self, local_dir: str, remote_dir: str) -> List[str]:
         """
-        Upload entire directory to SFTP server
+        Upload entire directory
         
         Args:
             local_dir: Local directory path
@@ -151,15 +107,30 @@ class SFTPUploader:
             List of failed uploads
         """
         failed_uploads = []
+        
         try:
-            # Ensure base remote directory exists
-            self.ensure_remote_dir(remote_dir)
-            
             # Walk through local directory
             for root, dirs, files in os.walk(local_dir):
                 # Calculate relative path
                 rel_path = os.path.relpath(root, local_dir)
                 current_remote_dir = os.path.join(remote_dir, rel_path).replace('\\', '/')
+                
+                # Create remote directory
+                mkdir_cmd = [
+                    'curl',
+                    '--insecure',
+                    '-v',
+                    f'sftp://{self.hostname}:{self.port}/{current_remote_dir}/',
+                    '--user',
+                    f'{self.username}:{self.password}',
+                    '-Q',       # Send custom command
+                    'MKD .'     # Make directory command
+                ]
+                
+                try:
+                    subprocess.run(mkdir_cmd, capture_output=True, text=True)
+                except Exception as e:
+                    logging.warning(f"Error creating directory {current_remote_dir}: {str(e)}")
                 
                 # Upload each file
                 for file in files:
@@ -194,7 +165,7 @@ def main():
     remote_base = f'/uploads/{timestamp}'
     
     # Initialize uploader
-    uploader = SFTPUploader(
+    uploader = CurlSFTPUploader(
         hostname=hostname,
         username=username,
         password=password,
@@ -202,13 +173,9 @@ def main():
         remote_base=remote_base
     )
     
+    failed_uploads = []
+    
     try:
-        # Connect to SFTP server
-        if not uploader.connect():
-            sys.exit(1)
-        
-        failed_uploads = []
-        
         # Upload logs directory
         if os.path.exists('logs'):
             logging.info("Uploading logs directory...")
@@ -238,9 +205,6 @@ def main():
     except Exception as e:
         logging.error(f"Upload failed: {str(e)}")
         sys.exit(1)
-        
-    finally:
-        uploader.close()
 
 if __name__ == "__main__":
     main()

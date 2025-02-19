@@ -150,6 +150,152 @@ class NetBrainClient:
             logging.error(f"Error validating token: {str(e)}")
             return False
 
+    def get_all_devices(self) -> List[Dict[str, Any]]:
+        """
+        Get all devices from NetBrain using the Devices API
+        Filters devices based on device type mappings in config
+        
+        Returns:
+            List of device dictionaries
+            
+        Raises:
+            NetBrainError: If ConfigManager is not provided or API errors occur
+        """
+        logging.debug("Getting all devices from NetBrain")
+        
+        if not self.config_manager:
+            raise NetBrainError("ConfigManager required for device type filtering")
+            
+        all_devices = []
+        device_types = self.config_manager.get_mapped_device_types()
+        logging.debug(f"Configured device types: {sorted(device_types)}")
+
+        # Get devices by type
+        for device_type in device_types:
+            try:
+                url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices')
+                skip = 0
+                limit = 50  # Use smaller batch size to avoid timeout issues
+
+                while True:
+                    # Build API query parameters
+                    params = {
+                        'version': '1',
+                        'skip': skip,
+                        'limit': limit,
+                        'fullattr': '1',
+                        'filter': json.dumps({"subTypeName": device_type})
+                    }
+                    
+                    logging.debug(f"Querying devices: type={device_type}, skip={skip}, limit={limit}")
+                    
+                    # Make API request
+                    response = self._request('GET', url, params=params)
+                    if not response:
+                        logging.error(f"No response received for device type {device_type}")
+                        break
+                        
+                    # Get device batch and total count
+                    devices = response.get('devices', [])
+                    total_count = response.get('totalResultCount', 0)
+                    
+                    if not devices:
+                        logging.debug(f"No devices found for type {device_type}")
+                        break
+
+                    # Normalize device data
+                    normalized_devices = []
+                    for device in devices:
+                        try:
+                            # Get additional details using hostname (not ID)
+                            hostname = device.get('name')
+                            if not hostname:
+                                logging.warning(f"Skipping device with missing hostname: {device}")
+                                continue
+                                
+                            device_details = self.get_device_details(hostname)
+                            if not device_details:
+                                logging.warning(f"Could not get details for device {hostname}")
+                                continue
+                                
+                            normalized = {
+                                'hostname': hostname,
+                                'mgmtIP': device.get('mgmtIP'),
+                                'site': device.get('site'),
+                                'attributes': {
+                                    'subTypeName': device.get('subTypeName'),
+                                    'vendor': device.get('vendor'),
+                                    'model': device.get('model'),
+                                    'version': device.get('ver'),
+                                    'serialNumber': device.get('sn'),
+                                    'contact': device.get('contact'),
+                                    'location': device.get('loc'),
+                                    'mgmtIntf': device.get('mgmtIntf'),
+                                    'description': device.get('descr'),
+                                    'lastDiscoveryTime': device.get('lDiscoveryTime', {}).get('$date')
+                                                       if isinstance(device.get('lDiscoveryTime'), dict) 
+                                                       else device.get('lDiscoveryTime')
+                                }
+                            }
+                            
+                            # Validate required fields
+                            if not normalized.get('mgmtIP'):
+                                logging.warning(f"Skipping device {hostname} with missing mgmtIP")
+                                continue
+                                
+                            if not normalized['attributes'].get('subTypeName'):
+                                logging.warning(f"Skipping device {hostname} with missing subTypeName")
+                                continue
+                                
+                            normalized_devices.append(normalized)
+                            logging.debug(f"Normalized device: hostname={normalized['hostname']}, "
+                                        f"IP={normalized['mgmtIP']}, type={normalized['attributes']['subTypeName']}")
+                                        
+                        except Exception as e:
+                            logging.error(f"Error normalizing device data: {str(e)}")
+                            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                                logging.error(f"Problem device data: {json.dumps(device, indent=2)}")
+                            continue
+
+                    # Add valid devices to result list
+                    all_devices.extend(normalized_devices)
+                    processed_count = skip + len(devices)
+                    
+                    logging.info(f"Retrieved {len(normalized_devices)} {device_type} devices. "
+                               f"Progress: {processed_count}/{total_count}")
+                    
+                    # Check if we're done with this device type
+                    if processed_count >= total_count or len(devices) < limit:
+                        logging.debug(f"Completed retrieval for device type {device_type}")
+                        break
+                        
+                    skip += len(devices)
+
+            except Exception as e:
+                logging.error(f"Error getting devices of type {device_type}: {str(e)}")
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    logging.exception("Detailed error trace:")
+                continue
+        
+        total_devices = len(all_devices)        
+        logging.info(f"Retrieved {total_devices} total devices from NetBrain")
+        
+        # Log device type distribution
+        type_counts = {}
+        for device in all_devices:
+            device_type = device['attributes'].get('subTypeName', 'Unknown')
+            type_counts[device_type] = type_counts.get(device_type, 0) + 1
+        
+        logging.info("Device type distribution:")
+        for device_type, count in sorted(type_counts.items()):
+            logging.info(f"  {device_type}: {count}")
+        
+        # Add detailed device logging if in debug mode
+        from .logger import log_device_details
+        log_device_details(all_devices)
+        
+        return all_devices
+
     def get_device_details(self, hostname_or_id: str) -> Optional[Dict[str, Any]]:
         """
         Get device details using the Attributes API endpoint
@@ -174,60 +320,30 @@ class NetBrainClient:
             }
         }
         """
-        # Check if input looks like a UUID
-        is_uuid = len(hostname_or_id) == 36 and '-' in hostname_or_id
+        url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/Attributes')
+        params = {'hostname': hostname_or_id}
         
-        if is_uuid:
-            # If it's a UUID, use the Device API directly
-            url = urljoin(self.host, f'/ServicesAPI/API/V1/CMDB/Devices/{hostname_or_id}')
-            try:
-                response = self._request('GET', url)
-                if response.get('statusCode') == 790200:  # Success
-                    device = response.get('device', {})
-                    if device:
-                        return {
-                            'name': device.get('name'),
-                            'mgmtIP': device.get('mgmtIP'),
-                            'site': device.get('site'),
-                            'attributes': {
-                                'subTypeName': device.get('subTypeName'),
-                                'vendor': device.get('vendor'),
-                                'model': device.get('model'),
-                                'ver': device.get('ver'),
-                                'mgmtIntf': device.get('mgmtIntf'),
-                                'lDiscoveryTime': device.get('lDiscoveryTime')
-                            }
-                        }
-                return None
-                
-            except Exception as e:
-                logging.error(f"Error getting device details for ID {hostname_or_id}: {str(e)}")
-                return None
-        else:
-            # If it's a hostname, use the Attributes API
-            url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/Attributes')
-            params = {'hostname': hostname_or_id}
+        try:
+            logging.debug(f"Getting device details for hostname: {hostname_or_id}")
+            response = self._request('GET', url, params=params)
             
-            try:
-                logging.debug(f"Getting device details for hostname: {hostname_or_id}")
-                response = self._request('GET', url, params=params)
+            if response.get('statusCode') == 790200:  # Success
+                # Build standardized device data structure
+                device_data = {
+                    'name': response.get('hostname'),
+                    'mgmtIP': response.get('attributes', {}).get('mgmtIP'),
+                    'site': response.get('attributes', {}).get('site', 'Unassigned'),
+                    'attributes': response.get('attributes', {})
+                }
                 
-                if response.get('statusCode') == 790200:  # Success
-                    device_data = {
-                        'name': response.get('hostname'),
-                        'mgmtIP': response.get('attributes', {}).get('mgmtIP'),
-                        'site': response.get('attributes', {}).get('site', 'Unassigned'),
-                        'attributes': response.get('attributes', {})
-                    }
-                    
-                    return device_data
-                    
-                logging.warning(f"Device {hostname_or_id} not found: {response.get('statusDescription')}")
-                return None
+                return device_data
                 
-            except Exception as e:
-                logging.error(f"Error getting device details for {hostname_or_id}: {str(e)}")
-                return None
+            logging.warning(f"Device {hostname_or_id} not found: {response.get('statusDescription')}")
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error getting device details for {hostname_or_id}: {str(e)}")
+            return None
 
     def _get_device_by_id(self, device_id: str) -> Optional[Dict[str, Any]]:
         """
