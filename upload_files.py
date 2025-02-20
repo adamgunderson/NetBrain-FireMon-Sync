@@ -4,7 +4,7 @@ SFTP Upload Script using curl for Logs and Reports
 Uploads contents of logs/ and reports/ directories to a remote SFTP server
 Uses curl instead of paramiko for better compatibility
 
-Hi! Key fixes:
+Key fixes:
 - Proper path handling for remote directories
 - Improved error handling and logging
 - Verification of successful uploads
@@ -103,12 +103,22 @@ class CurlSFTPUploader:
             
             logging.info(f"Uploading {local_path} to {remote_path}")
             
+            # Log the exact curl command being executed
+            logging.info("Executing curl command:")
+            logging.info(" ".join(curl_cmd))
+            
             # Run curl command and capture output
             result = subprocess.run(
                 curl_cmd,
                 capture_output=True,
                 text=True
             )
+            
+            # Log the complete output
+            logging.info("Curl stdout:")
+            logging.info(result.stdout)
+            logging.info("Curl stderr:")
+            logging.info(result.stderr)
             
             # Check for successful upload
             if result.returncode == 0:
@@ -129,6 +139,27 @@ class CurlSFTPUploader:
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 logging.exception("Detailed error trace:")
             return False
+
+    def _verify_directory_contents(self, dir_path: str) -> None:
+        """
+        Verify and log directory contents
+        
+        Args:
+            dir_path: Directory path to check
+        """
+        try:
+            if os.path.exists(dir_path):
+                logging.info(f"Directory exists: {dir_path}")
+                files = os.listdir(dir_path)
+                logging.info(f"Directory contents ({len(files)} files):")
+                for file in files:
+                    full_path = os.path.join(dir_path, file)
+                    size = os.path.getsize(full_path)
+                    logging.info(f"  - {file} ({size} bytes)")
+            else:
+                logging.error(f"Directory does not exist: {dir_path}")
+        except Exception as e:
+            logging.error(f"Error checking directory {dir_path}: {str(e)}")
 
     def _ensure_remote_directory(self, remote_dir: str) -> bool:
         """
@@ -169,6 +200,22 @@ class CurlSFTPUploader:
             return False
 
     def upload_directory(self, local_dir: str, remote_dir: str) -> List[str]:
+        """
+        Upload entire directory
+        
+        Args:
+            local_dir: Local directory path
+            remote_dir: Remote directory path
+            
+        Returns:
+            List of failed uploads
+        """
+        logging.info(f"Starting directory upload process:")
+        logging.info(f"  Local directory: {local_dir}")
+        logging.info(f"  Remote directory: {remote_dir}")
+        logging.info(f"  SFTP Host: {self.hostname}")
+        logging.info(f"  SFTP Port: {self.port}")
+        logging.info(f"  Username: {self.username}")
         """
         Upload entire directory
         
@@ -268,8 +315,13 @@ def main():
     uploaded_dirs = []
     
     try:
+        # Check and log current working directory
+        cwd = os.getcwd()
+        logging.info(f"Current working directory: {cwd}")
+        
         # Upload logs directory if it exists
         logs_dir = os.path.join(os.getcwd(), 'logs')
+        uploader._verify_directory_contents(logs_dir)
         if os.path.exists(logs_dir) and os.path.isdir(logs_dir):
             logging.info(f"Uploading logs directory: {logs_dir}")
             failed_logs = uploader.upload_directory(

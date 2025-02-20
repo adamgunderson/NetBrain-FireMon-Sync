@@ -387,7 +387,7 @@ class NetBrainClient:
                 logging.warning(f"No hostname found for device ID {device_id}")
                 return None
 
-            # Now get full device details from Attributes API
+            # FIXED: Get device details using hostname instead of ID
             device_data = self.get_device_details(hostname)
             if device_data:
                 # Cache with device ID as key

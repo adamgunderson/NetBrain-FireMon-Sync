@@ -23,6 +23,7 @@ from threading import Lock
 from collections import defaultdict
 import concurrent.futures
 import re
+from urllib.parse import urljoin 
 
 from .sync_lock import SyncLock, SyncLockError
 from .timestamp_utils import TimestampUtil
@@ -794,7 +795,7 @@ class SyncManager:
         try:
             hostname = nb_device['hostname']
             
-            # Get device details from NetBrain with proper attributes
+            # Get device details from NetBrain using hostname instead of ID
             device_details = self.netbrain.get_device_details(hostname)
             if not device_details:
                 logging.warning(f"Could not get device details for {hostname}")
@@ -830,7 +831,7 @@ class SyncManager:
                         # Use Device Raw Data API to get command output
                         url = urljoin(self.netbrain.host, '/ServicesAPI/API/V1/CMDB/Devices/DeviceRawData')
                         params = {
-                            'hostname': hostname,
+                            'hostname': hostname,  # Using hostname for API call
                             'dataType': 2,  # CLI command result
                             'cmd': command
                         }
@@ -857,23 +858,35 @@ class SyncManager:
                         log_config_details(hostname, configs)
 
                     # Import to FireMon
-                    result = self.firemon.import_device_config(
-                        fm_device['id'],
-                        configs,
-                        change_user='NetBrain'
-                    )
+                    try:
+                        result = self.firemon.import_device_config(
+                            fm_device['id'],
+                            configs,
+                            change_user='NetBrain'
+                        )
 
-                    with self._changes_lock:
-                        self.changes['configs'].append({
-                            'device': hostname,
-                            'action': 'update',
-                            'status': 'success',
-                            'details': {
-                                'nb_time': nb_config_time,
-                                'fm_time': fm_config_time,
-                                'files_updated': list(configs.keys())
-                            }
-                        })
+                        with self._changes_lock:
+                            self.changes['configs'].append({
+                                'device': hostname,
+                                'action': 'update',
+                                'status': 'success',
+                                'details': {
+                                    'nb_time': nb_config_time,
+                                    'fm_time': fm_config_time,
+                                    'files_updated': list(configs.keys())
+                                }
+                            })
+                            logging.info(f"Successfully updated configuration for device {hostname}")
+                    except Exception as e:
+                        error_msg = f"Error importing configuration to FireMon for device {hostname}: {str(e)}"
+                        logging.error(error_msg)
+                        with self._changes_lock:
+                            self.changes['configs'].append({
+                                'device': hostname,
+                                'action': 'error',
+                                'error': error_msg,
+                                'status': 'error'
+                            })
                 else:
                     logging.warning(f"No configurations retrieved for device {hostname}")
 
@@ -884,7 +897,8 @@ class SyncManager:
                 self.changes['configs'].append({
                     'device': hostname,
                     'action': 'error',
-                    'error': error_msg
+                    'error': error_msg,
+                    'status': 'error'
                 })
 
     def _sync_device_licenses(self, fm_device: Dict[str, Any]) -> None:
