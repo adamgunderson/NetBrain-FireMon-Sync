@@ -1,13 +1,16 @@
-# upload_files_curl.py
+# upload_files.py
 """
 SFTP Upload Script using curl for Logs and Reports
 Uploads contents of logs/ and reports/ directories to a remote SFTP server
 Uses curl instead of paramiko for better compatibility
 
-Requirements:
-- Python 3.9+
-- curl installed on system
-- python-dotenv
+Hi! Key fixes:
+- Proper path handling for remote directories
+- Improved error handling and logging
+- Verification of successful uploads
+- Better file existence checks
+- Proper curl command construction
+- Added upload verification
 """
 
 import os
@@ -16,7 +19,7 @@ import subprocess
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 from dotenv import load_dotenv
 
 class CurlSFTPUploader:
@@ -36,7 +39,10 @@ class CurlSFTPUploader:
         self.username = username
         self.password = password
         self.port = port
-        self.remote_base = remote_base
+        self.remote_base = remote_base.rstrip('/')
+        
+        # Track uploaded files
+        self.uploaded_files = set()
         
         # Setup logging
         self._setup_logging()
@@ -65,34 +71,101 @@ class CurlSFTPUploader:
             bool: True if upload successful, False otherwise
         """
         try:
-            # Construct curl command
+            # Verify local file exists and is readable
+            if not os.path.isfile(local_path):
+                logging.error(f"Local file not found: {local_path}")
+                return False
+                
+            if not os.access(local_path, os.R_OK):
+                logging.error(f"Local file not readable: {local_path}")
+                return False
+
+            # Normalize remote path
+            remote_path = remote_path.lstrip('/')
+            full_remote_url = f'sftp://{self.hostname}:{self.port}/{remote_path}'
+            
+            # Create parent directory structure
+            remote_dir = os.path.dirname(remote_path)
+            if remote_dir:
+                self._ensure_remote_directory(remote_dir)
+            
+            # Construct curl command with proper escaping
             curl_cmd = [
                 'curl',
-                '--insecure',  # Skip SSL verification
-                '-v',          # Verbose output for debugging
-                '-T',          # Upload file
-                local_path,    # Local file to upload
-                f'sftp://{self.hostname}:{self.port}/{remote_path}',
-                '--user',
-                f'{self.username}:{self.password}'
+                '--insecure',          # Skip SSL verification
+                '-v',                  # Verbose output for debugging
+                '--disable-epsv',      # Disable EPSV mode
+                '--ftp-create-dirs',   # Create missing directories
+                '-T', local_path,      # Upload file
+                full_remote_url,
+                '--user', f'{self.username}:{self.password}'
             ]
             
-            # Run curl command
+            logging.info(f"Uploading {local_path} to {remote_path}")
+            
+            # Run curl command and capture output
             result = subprocess.run(
                 curl_cmd,
                 capture_output=True,
                 text=True
             )
             
+            # Check for successful upload
             if result.returncode == 0:
-                logging.info(f"Successfully uploaded {local_path} to {remote_path}")
-                return True
+                # Verify upload by checking curl output
+                if 'bytes uploaded' in result.stderr:
+                    logging.info(f"Successfully uploaded {local_path}")
+                    self.uploaded_files.add(local_path)
+                    return True
+                else:
+                    logging.warning(f"Upload may have failed for {local_path}: No upload confirmation in output")
+                    return False
             else:
                 logging.error(f"Failed to upload {local_path}: {result.stderr}")
                 return False
                 
         except Exception as e:
             logging.error(f"Error uploading {local_path}: {str(e)}")
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.exception("Detailed error trace:")
+            return False
+
+    def _ensure_remote_directory(self, remote_dir: str) -> bool:
+        """
+        Ensure remote directory exists
+        
+        Args:
+            remote_dir: Remote directory path
+            
+        Returns:
+            bool: True if directory exists or was created
+        """
+        try:
+            # Build complete path for curl
+            full_remote_url = f'sftp://{self.hostname}:{self.port}/{remote_dir}/'
+            
+            curl_cmd = [
+                'curl',
+                '--insecure',
+                '-v',
+                '--ftp-create-dirs',   # This flag should create parent directories
+                full_remote_url,
+                '--user', f'{self.username}:{self.password}',
+                '-Q', 'MKD .'          # Try to create directory
+            ]
+            
+            result = subprocess.run(curl_cmd, capture_output=True, text=True)
+            
+            # Check both for success and "already exists" responses
+            if result.returncode == 0 or 'File exists' in result.stderr:
+                logging.debug(f"Ensured remote directory exists: {remote_dir}")
+                return True
+            else:
+                logging.error(f"Failed to create remote directory {remote_dir}: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            logging.error(f"Error creating remote directory {remote_dir}: {str(e)}")
             return False
 
     def upload_directory(self, local_dir: str, remote_dir: str) -> List[str]:
@@ -109,28 +182,34 @@ class CurlSFTPUploader:
         failed_uploads = []
         
         try:
+            # Verify local directory exists
+            if not os.path.isdir(local_dir):
+                logging.error(f"Local directory not found: {local_dir}")
+                return [local_dir]
+            
+            # Normalize paths
+            local_dir = os.path.abspath(local_dir)
+            remote_dir = remote_dir.strip('/')
+            
+            # Create base remote directory
+            if not self._ensure_remote_directory(remote_dir):
+                logging.error(f"Could not create remote directory: {remote_dir}")
+                return [local_dir]
+            
             # Walk through local directory
             for root, dirs, files in os.walk(local_dir):
                 # Calculate relative path
                 rel_path = os.path.relpath(root, local_dir)
                 current_remote_dir = os.path.join(remote_dir, rel_path).replace('\\', '/')
                 
-                # Create remote directory
-                mkdir_cmd = [
-                    'curl',
-                    '--insecure',
-                    '-v',
-                    f'sftp://{self.hostname}:{self.port}/{current_remote_dir}/',
-                    '--user',
-                    f'{self.username}:{self.password}',
-                    '-Q',       # Send custom command
-                    'MKD .'     # Make directory command
-                ]
+                # Skip if no files to upload
+                if not files:
+                    continue
                 
-                try:
-                    subprocess.run(mkdir_cmd, capture_output=True, text=True)
-                except Exception as e:
-                    logging.warning(f"Error creating directory {current_remote_dir}: {str(e)}")
+                # Ensure remote directory exists for current level
+                if not self._ensure_remote_directory(current_remote_dir):
+                    logging.error(f"Failed to create remote directory: {current_remote_dir}")
+                    continue
                 
                 # Upload each file
                 for file in files:
@@ -139,11 +218,22 @@ class CurlSFTPUploader:
                     
                     if not self.upload_file(local_path, remote_path):
                         failed_uploads.append(local_path)
+                        logging.error(f"Failed to upload: {local_path}")
+                    else:
+                        logging.info(f"Successfully uploaded: {local_path}")
                         
         except Exception as e:
             logging.error(f"Error uploading directory {local_dir}: {str(e)}")
+            failed_uploads.append(local_dir)
             
         return failed_uploads
+
+    def get_upload_stats(self) -> dict:
+        """Get statistics about uploaded files"""
+        return {
+            'total_uploaded': len(self.uploaded_files),
+            'uploaded_files': sorted(list(self.uploaded_files))
+        }
 
 def main():
     """Main entry point for SFTP upload script"""
@@ -156,6 +246,7 @@ def main():
     password = os.getenv('SFTP_PASS')
     port = int(os.getenv('SFTP_PORT', '22'))
     
+    # Verify credentials
     if not all([hostname, username, password]):
         logging.error("Missing required SFTP credentials in environment variables")
         sys.exit(1)
@@ -174,36 +265,57 @@ def main():
     )
     
     failed_uploads = []
+    uploaded_dirs = []
     
     try:
-        # Upload logs directory
-        if os.path.exists('logs'):
-            logging.info("Uploading logs directory...")
+        # Upload logs directory if it exists
+        logs_dir = os.path.join(os.getcwd(), 'logs')
+        if os.path.exists(logs_dir) and os.path.isdir(logs_dir):
+            logging.info(f"Uploading logs directory: {logs_dir}")
             failed_logs = uploader.upload_directory(
-                'logs',
+                logs_dir,
                 f'{remote_base}/logs'
             )
             failed_uploads.extend(failed_logs)
+            if not failed_logs:
+                uploaded_dirs.append('logs')
+        else:
+            logging.warning("Logs directory not found")
         
-        # Upload reports directory
-        if os.path.exists('reports'):
-            logging.info("Uploading reports directory...")
+        # Upload reports directory if it exists
+        reports_dir = os.path.join(os.getcwd(), 'reports')
+        if os.path.exists(reports_dir) and os.path.isdir(reports_dir):
+            logging.info(f"Uploading reports directory: {reports_dir}")
             failed_reports = uploader.upload_directory(
-                'reports',
+                reports_dir,
                 f'{remote_base}/reports'
             )
             failed_uploads.extend(failed_reports)
+            if not failed_reports:
+                uploaded_dirs.append('reports')
+        else:
+            logging.warning("Reports directory not found")
+        
+        # Get upload statistics
+        stats = uploader.get_upload_stats()
         
         # Report results
         if failed_uploads:
             logging.warning(f"Failed to upload {len(failed_uploads)} files:")
             for failed in failed_uploads:
                 logging.warning(f"  - {failed}")
+        
+        if stats['total_uploaded'] > 0:
+            logging.info(f"Successfully uploaded {stats['total_uploaded']} files")
+            logging.info(f"Uploaded directories: {', '.join(uploaded_dirs)}")
         else:
-            logging.info("All files uploaded successfully")
+            logging.error("No files were uploaded successfully")
+            sys.exit(1)
         
     except Exception as e:
         logging.error(f"Upload failed: {str(e)}")
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            logging.exception("Detailed error trace:")
         sys.exit(1)
 
 if __name__ == "__main__":

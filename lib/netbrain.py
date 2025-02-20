@@ -296,12 +296,13 @@ class NetBrainClient:
         
         return all_devices
 
-    def get_device_details(self, hostname_or_id: str) -> Optional[Dict[str, Any]]:
+    def get_device_details(self, hostname: str) -> Optional[Dict[str, Any]]:
         """
         Get device details using the Attributes API endpoint
+        Uses hostname for the API call as required by NetBrain API
         
         Args:
-            hostname_or_id: Device hostname or ID
+            hostname: Device hostname (not device ID)
                 
         Returns:
             Device dictionary or None if not found
@@ -321,10 +322,21 @@ class NetBrainClient:
         }
         """
         url = urljoin(self.host, '/ServicesAPI/API/V1/CMDB/Devices/Attributes')
-        params = {'hostname': hostname_or_id}
+        
+        # Ensure we're using hostname and not ID
+        if not isinstance(hostname, str):
+            logging.warning(f"Invalid hostname type provided: {type(hostname)}. Expected string.")
+            return None
+            
+        # Skip UUIDs that look like device IDs
+        if len(hostname) == 36 and hostname.count('-') == 4:
+            logging.warning(f"Received device ID instead of hostname: {hostname}")
+            return None
+            
+        params = {'hostname': hostname}
         
         try:
-            logging.debug(f"Getting device details for hostname: {hostname_or_id}")
+            logging.debug(f"Getting device details for hostname: {hostname}")
             response = self._request('GET', url, params=params)
             
             if response.get('statusCode') == 790200:  # Success
@@ -338,11 +350,11 @@ class NetBrainClient:
                 
                 return device_data
                 
-            logging.warning(f"Device {hostname_or_id} not found: {response.get('statusDescription')}")
+            logging.warning(f"Device {hostname} not found: {response.get('statusDescription')}")
             return None
             
         except Exception as e:
-            logging.error(f"Error getting device details for {hostname_or_id}: {str(e)}")
+            logging.error(f"Error getting device details for {hostname}: {str(e)}")
             return None
 
     def _get_device_by_id(self, device_id: str) -> Optional[Dict[str, Any]]:
