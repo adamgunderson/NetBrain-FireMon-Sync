@@ -256,7 +256,7 @@ class SyncManager:
             raise
 
     def _calculate_device_delta(self, nb_devices: List[Dict[str, Any]], 
-                        fm_devices: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+                    fm_devices: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         """
         Calculate the difference between NetBrain and FireMon devices
         Performs matching using both hostname and IP address
@@ -280,15 +280,17 @@ class SyncManager:
         logging.debug(f"Configured device types: {sorted(configured_device_types)}")
         
         # Create both hostname and IP based lookups for FireMon devices
+        # Using lowercase for case-insensitive comparisons
         fm_by_hostname = {}
         fm_by_ip = {}
         processed_fm_devices = set()  # Track which FM devices we've processed
         
         for fm_device in fm_devices:
-            hostname = fm_device.get('name', '').lower()
+            hostname = fm_device.get('name', '')
             mgmt_ip = fm_device.get('managementIp')
             if hostname:
-                fm_by_hostname[hostname] = fm_device
+                # Convert to lowercase for case-insensitive lookup
+                fm_by_hostname[hostname.lower()] = fm_device
             if mgmt_ip:
                 fm_by_ip[mgmt_ip] = fm_device
             logging.debug(f"FireMon device found: name={fm_device.get('name')}, IP={mgmt_ip}")
@@ -324,11 +326,13 @@ class SyncManager:
 
         # Process each NetBrain device
         for nb_device in valid_nb_devices:
-            hostname = nb_device['hostname'].lower()
+            hostname = nb_device['hostname']
+            hostname_lower = hostname.lower()  # Use lowercase for comparison
             mgmt_ip = nb_device['mgmtIP']
             
             # Try to find matching FireMon device by hostname or IP
-            fm_device = fm_by_hostname.get(hostname) or fm_by_ip.get(mgmt_ip)
+            # Use lowercase hostname for lookup
+            fm_device = fm_by_hostname.get(hostname_lower) or fm_by_ip.get(mgmt_ip)
             
             if not fm_device:
                 # Device only in NetBrain
@@ -343,7 +347,7 @@ class SyncManager:
                     'version': nb_device['attributes'].get('version', 'N/A')
                 })
             else:
-                # Mark this FireMon device as processed
+                # Mark this FireMon device as processed - use lowercase to ensure case-insensitive matching
                 if fm_device.get('name'):
                     processed_fm_devices.add(fm_device['name'].lower())
                 if fm_device.get('managementIp'):
@@ -459,11 +463,12 @@ class SyncManager:
 
         # Find devices only in FireMon
         for fm_device in fm_devices:
-            hostname = fm_device.get('name', '').lower()
+            hostname = fm_device.get('name', '')
+            hostname_lower = hostname.lower() if hostname else ''  # Use lowercase for comparison
             mgmt_ip = fm_device.get('managementIp')
             
-            # Skip if we've already processed this device
-            if hostname in processed_fm_devices or mgmt_ip in processed_fm_devices:
+            # Skip if we've already processed this device - using lowercase for comparison
+            if hostname_lower in processed_fm_devices or mgmt_ip in processed_fm_devices:
                 continue
                 
             # Get device pack info
@@ -807,10 +812,26 @@ class SyncManager:
                 return
 
             fm_revision = self.firemon.get_device_revision(fm_device['id'])
-            fm_config_time = fm_revision['completeDate'] if fm_revision else None
+            
+            # Safely access completeDate with error handling
+            fm_config_time = None
+            if fm_revision:
+                # Use .get() with default value to prevent KeyError
+                fm_config_time = fm_revision.get('completeDate')
+                if not fm_config_time:
+                    logging.warning(f"No completeDate found in revision for device {hostname}")
+                    # Try alternative fields if available
+                    fm_config_time = fm_revision.get('createDate') or fm_revision.get('date')
+            
+            # If we still don't have a valid time, assume config needs to be updated
+            needs_update = True
+            if fm_config_time:
+                # Compare timestamps
+                needs_update = TimestampUtil.is_newer_than(nb_config_time, fm_config_time)
+            else:
+                logging.info(f"No valid FireMon config timestamp for {hostname}, forcing update")
 
-            # Compare timestamps
-            if not fm_config_time or TimestampUtil.is_newer_than(nb_config_time, fm_config_time):
+            if needs_update:
                 logging.info(f"Configuration update needed for {hostname}")
                 
                 # Get configs from NetBrain
@@ -856,11 +877,23 @@ class SyncManager:
                     if logging.getLogger().isEnabledFor(logging.DEBUG):
                         log_config_details(hostname, configs)
 
+                    # Map the commands to FireMon config files
+                    fm_configs = {}
+                    for command, content in configs.items():
+                        # Get the mapping from command to FireMon filename
+                        fm_filename = command_mappings.get(command)
+                        if fm_filename:
+                            fm_configs[fm_filename] = content
+                        else:
+                            # Use a default mapping if not found
+                            default_filename = command.replace(' ', '_').lower() + '.txt'
+                            fm_configs[default_filename] = content
+
                     # Import to FireMon
                     try:
                         result = self.firemon.import_device_config(
                             fm_device['id'],
-                            configs,
+                            fm_configs,
                             change_user='NetBrain'
                         )
 
@@ -872,7 +905,7 @@ class SyncManager:
                                 'details': {
                                     'nb_time': nb_config_time,
                                     'fm_time': fm_config_time,
-                                    'files_updated': list(configs.keys())
+                                    'files_updated': list(fm_configs.keys())
                                 }
                             })
                             logging.info(f"Successfully updated configuration for device {hostname}")
@@ -899,7 +932,6 @@ class SyncManager:
                     'error': error_msg,
                     'status': 'error'
                 })
-
     def _sync_device_licenses(self, fm_device: Dict[str, Any]) -> None:
         """Sync device licenses"""
         try:

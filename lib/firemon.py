@@ -145,26 +145,20 @@ class FireMonClient:
     def search_device(self, hostname: str, mgmt_ip: str) -> Optional[Dict[str, Any]]:
         """
         Search for a device by hostname and management IP
+        Uses case-insensitive search for hostname to match FireMon behavior
         
         Args:
             hostname: Device hostname
             mgmt_ip: Management IP address
                 
         Returns:
-            Device dictionary if found, None otherwise. Example response:
-            {
-                'id': 12345,
-                'name': 'device1',
-                'managementIp': '10.0.0.1',
-                'collectorGroupName': 'group1',
-                'product': 'SRX',
-                'managedType': 'MANAGED',
-                'lastRevision': '2024-12-10T19:57:49.487Z'  # Timestamp when config was last imported
-            }
+            Device dictionary if found, None otherwise
         """
         url = urljoin(self.host, '/securitymanager/api/siql/device/paged-search')
+        
+        # Modified to use case-insensitive comparison with 'matches' operator instead of equals
         query = (f"domain {{ id = {self.domain_id} }} AND device {{ "
-                f"name = '{hostname}' AND (( managementip equals '{mgmt_ip}' )) }}")
+                f"name matches '{hostname}' AND (( managementip equals '{mgmt_ip}' )) }}")
         
         params = {
             'q': query,
@@ -187,12 +181,38 @@ class FireMonClient:
                     'collectorGroupName': device.get('collectorGroupName'),
                     'product': device.get('product'),
                     'managedType': device.get('managedType'),
-                    'lastRevision': device.get('lastRevision'),  # Get lastRevision from the API response
+                    'lastRevision': device.get('lastRevision'),
                     'devicePack': {
                         'deviceName': device.get('product'),
                         'vendor': device.get('vendor')
                     } if device.get('product') and device.get('vendor') else None
                 }
+            
+            # If not found with exact match, try with only hostname
+            if mgmt_ip:
+                query = (f"domain {{ id = {self.domain_id} }} AND device {{ "
+                        f"name matches '{hostname}' }}")
+                
+                params['q'] = query
+                response = self._request('GET', url, params=params)
+                results = response.get('results', [])
+                
+                if results:
+                    device = results[0]
+                    return {
+                        'id': device.get('id'),
+                        'name': device.get('name'),
+                        'managementIp': device.get('managementIp'),
+                        'collectorGroupName': device.get('collectorGroupName'),
+                        'product': device.get('product'),
+                        'managedType': device.get('managedType'),
+                        'lastRevision': device.get('lastRevision'),
+                        'devicePack': {
+                            'deviceName': device.get('product'),
+                            'vendor': device.get('vendor')
+                        } if device.get('product') and device.get('vendor') else None
+                    }
+            
             return None
             
         except Exception as e:
