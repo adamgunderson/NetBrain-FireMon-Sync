@@ -256,6 +256,62 @@ class FireMonClient:
             logging.error(error_msg)
             raise FireMonError(error_msg)
 
+    def update_device(self, device_id: int, device_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Update an existing device in FireMon
+        
+        Args:
+            device_id: FireMon device ID
+            device_data: Updated device configuration dictionary
+            
+        Returns:
+            Updated device data
+            
+        Raises:
+            FireMonAPIError: If device update fails
+        """
+        url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/device/{device_id}')
+        
+        try:
+            # Log the update details
+            logging.debug(f"Updating device ID {device_id} with payload: {json.dumps(device_data, indent=2)}")
+            
+            response = self.session.put(url, json=device_data)
+            
+            # Handle errors with detailed information
+            if not response.ok:
+                error_details = "Unknown error"
+                try:
+                    error_response = response.json()
+                    if isinstance(error_response, dict):
+                        error_details = error_response.get('message', error_response.get('error', str(error_response)))
+                    else:
+                        error_details = str(error_response)
+                except Exception:
+                    error_details = response.text or str(response.reason)
+                
+                error_msg = (
+                    f"Failed to update device {device_id}: "
+                    f"Status {response.status_code} - {error_details}"
+                )
+                logging.error(error_msg)
+                logging.error(f"Request URL: {url}")
+                
+                raise FireMonAPIError(error_msg)
+            
+            result = response.json()
+            logging.info(f"Successfully updated device ID {device_id}")
+            return result
+            
+        except requests.exceptions.RequestException as e:
+            error_msg = f"API request failed for device update: {str(e)}"
+            logging.error(error_msg)
+            raise FireMonAPIError(error_msg)
+        except Exception as e:
+            error_msg = f"Unexpected error updating device: {str(e)}"
+            logging.error(error_msg)
+            raise FireMonError(error_msg)
+
     def import_device_config(self, device_id: int, files: Dict[str, str], 
                            change_user: str = 'NetBrain') -> Dict[str, Any]:
         """

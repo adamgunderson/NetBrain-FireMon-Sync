@@ -564,8 +564,7 @@ class SyncManager:
 
     def _create_device_with_configs(self, device: Dict[str, Any], device_pack: Dict[str, Any]) -> None:
         """
-        Create new device in FireMon with configurations
-        Includes enhanced error handling and validation
+        Create new device in FireMon with configurations - Fixed version
         
         Args:
             device: NetBrain device dictionary
@@ -584,7 +583,7 @@ class SyncManager:
             if missing_pack_fields:
                 raise ValueError(f"Missing required device pack fields: {missing_pack_fields}")
 
-            # Prepare device data following FireMon API structure
+            # Prepare device data following FireMon API structure - FIX: removed type field from collectionConfig
             device_data = {
                 "name": device['hostname'],
                 "managementIp": device['mgmtIP'],
@@ -596,8 +595,8 @@ class SyncManager:
                     "deviceName": device_pack['device_name'],
                     "type": "DEVICE_PACK",  # Required type field
                     "collectionConfig": {
-                        "name": "Default",
-                        "type": "COLLECTION_CONFIG"  # Required type field for collection config
+                        "name": "Default"
+                        # Removed the problematic "type": "COLLECTION_CONFIG" field
                     }
                 }
             }
