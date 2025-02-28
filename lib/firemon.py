@@ -353,9 +353,9 @@ class FireMonClient:
             raise FireMonError(error_msg)
 
     def import_device_config(self, device_id: int, files: Dict[str, str], 
-                           change_user: str = 'NetBrain') -> Dict[str, Any]:
+                       change_user: str = 'NetBrain') -> Dict[str, Any]:
         """
-        Import device configuration files
+        Import device configuration files to FireMon
         
         Args:
             device_id: FireMon device ID
@@ -374,17 +374,61 @@ class FireMonClient:
             'changeUser': change_user
         }
         
-        files_data = {
-            f'file[{i}]': (filename, content)
-            for i, (filename, content) in enumerate(files.items())
-        }
-        
         try:
-            response = self.session.post(url, params=params, files=files_data)
-            response.raise_for_status()
-            return response.json()
+            # Create proper multipart form data with indexed file fields
+            # Each file needs to be named "file[index]" with filename attribute set correctly
+            multipart_form_data = {}
+            
+            for i, (filename, content) in enumerate(files.items()):
+                # Create a file-like object from the content string
+                # The key needs to be 'file[i]' exactly as the API expects
+                field_name = f'file[{i}]'
+                
+                # Log what we're uploading for debug purposes
+                logging.debug(f"Adding file to upload: {field_name}, filename={filename}, content length={len(content)}")
+                
+                # Create the multipart form data entry with the proper filename
+                multipart_form_data[field_name] = (filename, content, 'application/octet-stream')
+            
+            # Log request details
+            logging.debug(f"Sending config import request to FireMon: URL={url}, params={params}, "
+                         f"Uploading {len(multipart_form_data)} files")
+            
+            # Make the request using the requests library's files parameter
+            # This properly handles the multipart/form-data encoding
+            response = self.session.post(url, params=params, files=multipart_form_data)
+            
+            # Check response status
+            if not response.ok:
+                # Try to get more detailed error information
+                try:
+                    error_details = response.json()
+                    error_msg = f"Error importing device config: {response.status_code} {response.reason} - {error_details}"
+                except:
+                    error_msg = f"Error importing device config: {response.status_code} {response.reason} for url: {response.url}"
+                
+                logging.error(error_msg)
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    logging.error(f"Response content: {response.text}")
+                
+                raise FireMonAPIError(error_msg)
+            
+            # Parse and return the response
+            result = response.json()
+            logging.info(f"Successfully imported configuration for device {device_id}, "
+                       f"revision ID: {result.get('id')}")
+            return result
+            
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Request failed during config import: {str(e)}"
+            logging.error(error_msg)
+            raise FireMonAPIError(error_msg)
         except Exception as e:
-            raise FireMonAPIError(f"Error importing device config: {str(e)}")
+            error_msg = f"Error importing device config: {str(e)}"
+            logging.error(error_msg)
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.exception("Detailed error trace for config import:")
+            raise FireMonAPIError(error_msg)
 
     def manage_device_license(self, device_id: int, add: bool = True, 
                             products: Optional[List[str]] = None) -> None:

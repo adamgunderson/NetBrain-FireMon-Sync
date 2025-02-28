@@ -785,6 +785,7 @@ class SyncManager:
             if fm_config_time:
                 # Compare timestamps
                 needs_update = TimestampUtil.is_newer_than(nb_config_time, fm_config_time)
+                logging.debug(f"Config timestamp comparison for {hostname}: NB={nb_config_time}, FM={fm_config_time}, needs_update={needs_update}")
             else:
                 logging.info(f"No valid FireMon config timestamp for {hostname}, forcing update")
 
@@ -818,7 +819,8 @@ class SyncManager:
                             content = response.get('content', '')
                             if content:
                                 configs[command] = self.netbrain._process_command_output(content, command)
-                                logging.debug(f"Successfully retrieved command '{command}' for device {hostname}")
+                                logging.debug(f"Successfully retrieved command '{command}' for device {hostname} "
+                                            f"(length: {len(configs[command])} chars)")
                             else:
                                 logging.warning(f"Empty content received for command '{command}' on device {hostname}")
                         else:
@@ -829,25 +831,69 @@ class SyncManager:
                         continue
 
                 if configs:
+                    # Validate config contents before proceeding
+                    valid_configs = {}
+                    invalid_cmds = []
+                    
+                    for command, content in configs.items():
+                        # Ensure content is not empty or too small to be valid
+                        if not content or len(content.strip()) < 10:
+                            invalid_cmds.append(command)
+                            logging.warning(f"Skipping invalid/empty content for command '{command}' on device {hostname}")
+                            continue
+                        
+                        # Add valid content
+                        valid_configs[command] = content
+                    
+                    if invalid_cmds:
+                        logging.warning(f"Skipped {len(invalid_cmds)} commands with invalid content for device {hostname}")
+                    
+                    if not valid_configs:
+                        logging.error(f"No valid configurations retrieved for device {hostname}")
+                        with self._changes_lock:
+                            self.changes['configs'].append({
+                                'device': hostname,
+                                'action': 'error',
+                                'error': f"No valid configurations retrieved",
+                                'status': 'error'
+                            })
+                        return
+                        
                     # Log configs being uploaded when in debug mode
                     from .logger import log_config_details
                     if logging.getLogger().isEnabledFor(logging.DEBUG):
-                        log_config_details(hostname, configs)
+                        log_config_details(hostname, valid_configs)
 
                     # Map the commands to FireMon config files
                     fm_configs = {}
-                    for command, content in configs.items():
+                    for command, content in valid_configs.items():
                         # Get the mapping from command to FireMon filename
                         fm_filename = command_mappings.get(command)
-                        if fm_filename:
+                        if fm_filename and content:
                             fm_configs[fm_filename] = content
-                        else:
-                            # Use a default mapping if not found
+                        elif content:
+                            # Use a default mapping if no mapping found but we have content
                             default_filename = command.replace(' ', '_').lower() + '.txt'
                             fm_configs[default_filename] = content
+                            logging.warning(f"No mapping found for command '{command}', using default filename '{default_filename}'")
+
+                    if not fm_configs:
+                        logging.error(f"No configurations to import for device {hostname} after mapping")
+                        with self._changes_lock:
+                            self.changes['configs'].append({
+                                'device': hostname,
+                                'action': 'error',
+                                'error': f"No configurations to import after mapping",
+                                'status': 'error'
+                            })
+                        return
 
                     # Import to FireMon
                     try:
+                        # Log key information about what we're importing
+                        logging.info(f"Importing {len(fm_configs)} config files for device {hostname} (ID: {fm_device['id']})")
+                        logging.debug(f"Config files being imported: {list(fm_configs.keys())}")
+                        
                         result = self.firemon.import_device_config(
                             fm_device['id'],
                             fm_configs,
@@ -862,10 +908,11 @@ class SyncManager:
                                 'details': {
                                     'nb_time': nb_config_time,
                                     'fm_time': fm_config_time,
-                                    'files_updated': list(fm_configs.keys())
+                                    'files_updated': list(fm_configs.keys()),
+                                    'revision_id': result.get('id')
                                 }
                             })
-                            logging.info(f"Successfully updated configuration for device {hostname}")
+                        logging.info(f"Successfully updated configuration for device {hostname} with revision {result.get('id')}")
                     except Exception as e:
                         error_msg = f"Error importing configuration to FireMon for device {hostname}: {str(e)}"
                         logging.error(error_msg)
@@ -879,16 +926,22 @@ class SyncManager:
                 else:
                     logging.warning(f"No configurations retrieved for device {hostname}")
 
+            else:
+                logging.info(f"Configuration for device {hostname} is already up to date, skipping update")
+
         except Exception as e:
-            error_msg = f"Error syncing configs for device {hostname}: {str(e)}"
+            error_msg = f"Error syncing configs for device {nb_device.get('hostname', 'unknown')}: {str(e)}"
             logging.error(error_msg)
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.exception("Detailed config sync error trace:")
             with self._changes_lock:
                 self.changes['configs'].append({
-                    'device': hostname,
+                    'device': nb_device.get('hostname', 'unknown'),
                     'action': 'error',
                     'error': error_msg,
                     'status': 'error'
                 })
+
     def _sync_device_licenses(self, fm_device: Dict[str, Any]) -> None:
         """Sync device licenses"""
         try:
