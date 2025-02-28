@@ -154,50 +154,72 @@ class FireMonClient:
         Returns:
             Device dictionary if found, None otherwise
         """
-        url = urljoin(self.host, '/securitymanager/api/siql/device/paged-search')
-        
-        try:
-            # First try case-insensitive name search
-            query = (f"domain {{ id = {self.domain_id} }} AND device {{ "
-                    f"name matches '{hostname}' }}")
+        if not hostname and not mgmt_ip:
+            logging.warning("Both hostname and mgmt_ip are empty, cannot search for device")
+            return None
             
+        # First try getting all devices and doing client-side matching
+        # This is more reliable than using the API's search capabilities
+        try:
+            # Get all devices from the domain
+            url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/device')
             params = {
-                'q': query,
                 'page': 0,
-                'pageSize': 50,  # Larger page size to catch all potential matches
-                'sort': 'name'
+                'pageSize': 1000  # Get a large batch to ensure we find matching devices
             }
             
-            logging.debug(f"Searching for device: hostname={hostname}, IP={mgmt_ip}")
+            logging.debug(f"Searching for device with hostname={hostname}, IP={mgmt_ip}")
             response = self._request('GET', url, params=params)
-            results = response.get('results', [])
+            devices = response.get('results', [])
             
-            if results:
-                # Find exact case-insensitive match manually
-                for device in results:
+            # First try exact case-insensitive hostname match
+            if hostname:
+                hostname_lower = hostname.lower()
+                for device in devices:
                     device_name = device.get('name', '')
-                    if device_name.lower() == hostname.lower():
-                        logging.debug(f"Found case-insensitive match: {device_name} for {hostname}")
+                    if device_name and device_name.lower() == hostname_lower:
+                        logging.info(f"Found exact case-insensitive match by name: {device_name} for {hostname}")
                         return self._format_device_result(device)
             
-            # If no match by name, try by IP if provided
+            # Then try exact IP match
             if mgmt_ip:
+                for device in devices:
+                    device_ip = device.get('managementIp')
+                    if device_ip == mgmt_ip:
+                        logging.info(f"Found exact match by IP: {device_ip} for device {device.get('name', 'unknown')}")
+                        return self._format_device_result(device)
+                        
+            # If still no match, use the SIQL search as a fallback
+            if hostname:
+                url = urljoin(self.host, '/securitymanager/api/siql/device/paged-search')
                 query = (f"domain {{ id = {self.domain_id} }} AND device {{ "
-                        f"managementip equals '{mgmt_ip}' }}")
+                        f"name matches '{hostname}' }}")
                 
-                params['q'] = query
+                params = {
+                    'q': query,
+                    'page': 0,
+                    'pageSize': 50,
+                    'sort': 'name'
+                }
+                
                 response = self._request('GET', url, params=params)
                 results = response.get('results', [])
                 
                 if results:
-                    logging.debug(f"Found match by IP for {hostname}: {results[0].get('name')}")
-                    return self._format_device_result(results[0])
+                    # Find exact case-insensitive match manually
+                    for device in results:
+                        device_name = device.get('name', '')
+                        if device_name.lower() == hostname.lower():
+                            logging.info(f"Found case-insensitive match via SIQL: {device_name} for {hostname}")
+                            return self._format_device_result(device)
             
             logging.debug(f"No match found for {hostname} / {mgmt_ip}")
             return None
             
         except Exception as e:
             logging.error(f"Error searching for device {hostname}: {str(e)}")
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.exception("Detailed search error trace:")
             return None
 
     def _format_device_result(self, device: Dict[str, Any]) -> Dict[str, Any]:
