@@ -349,7 +349,7 @@ class SyncManager:
             else:
                 # Mark this FireMon device as processed - use lowercase to ensure case-insensitive matching
                 if fm_device.get('name'):
-                    processed_fm_devices.add(fm_device['name'].lower())
+                    processed_fm_devices.add(fm_device['name'].lower())  # Use lowercase
                 if fm_device.get('managementIp'):
                     processed_fm_devices.add(fm_device['managementIp'])
 
@@ -464,10 +464,10 @@ class SyncManager:
         # Find devices only in FireMon
         for fm_device in fm_devices:
             hostname = fm_device.get('name', '')
-            hostname_lower = hostname.lower() if hostname else ''  # Use lowercase for comparison
+            hostname_lower = hostname.lower() if hostname else ''  # Use lowercase
             mgmt_ip = fm_device.get('managementIp')
             
-            # Skip if we've already processed this device - using lowercase for comparison
+            # Skip if we've already processed this device - using lowercase
             if hostname_lower in processed_fm_devices or mgmt_ip in processed_fm_devices:
                 continue
                 
