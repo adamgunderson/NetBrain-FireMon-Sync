@@ -106,6 +106,10 @@ class SyncManager:
                 
                 self.current_sync_start = datetime.utcnow()
 
+                # Pre-load FireMon devices to optimize lookups
+                logging.info("Pre-loading all FireMon devices for faster processing...")
+                self.firemon.initialize_device_cache()
+
                 # Get devices from both systems
                 logging.info("Retrieving devices from NetBrain and FireMon...")
                 nb_devices = self.netbrain.get_all_devices()
@@ -941,6 +945,51 @@ class SyncManager:
                     'error': error_msg,
                     'status': 'error'
                 })
+
+    def _sync_licenses_parallel(self) -> None:
+        """
+        Process license synchronization in parallel
+        Only considers devices with configured device types in sync-mappings.yaml
+        """
+        if self.config_manager.sync_config.dry_run:
+            logging.info("Skipping license sync in dry run mode")
+            return
+
+        try:
+            # Get devices from both systems
+            logging.info("Getting devices for license sync")
+            nb_devices = self.netbrain.get_all_devices()  # This already filters by configured device types
+            fm_devices = self.firemon.get_all_devices()
+            
+            # Create a set of hostnames from NetBrain devices for filtering (case-insensitive)
+            nb_hostnames = {device['hostname'].lower() for device in nb_devices}
+            
+            # Filter FireMon devices to only include those matching NetBrain devices
+            # with configured device types
+            matching_fm_devices = [
+                device for device in fm_devices 
+                if device.get('name', '').lower() in nb_hostnames
+            ]
+            
+            logging.info(f"Found {len(matching_fm_devices)} FireMon devices matching configured NetBrain device types")
+            
+            # Process licenses in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = [
+                    executor.submit(self._sync_device_licenses, device)
+                    for device in matching_fm_devices
+                ]
+                
+                # Wait for all license syncs to complete
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logging.error(f"Error in license sync task: {str(e)}")
+                
+        except Exception as e:
+            logging.error(f"Error in parallel license sync: {str(e)}")
+            raise
 
     def _sync_device_licenses(self, fm_device: Dict[str, Any]) -> None:
         """Sync device licenses"""

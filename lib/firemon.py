@@ -32,7 +32,7 @@ class FireMonAPIError(FireMonError):
 
 class FireMonClient:
     def __init__(self, host: str = None, username: str = None,
-                 password: str = None, domain_id: int = None):
+             password: str = None, domain_id: int = None):
         """
         Initialize FireMon client with environment variables or provided values
         
@@ -50,8 +50,28 @@ class FireMonClient:
         if not all([self.host, self.username, self.password]):
             raise ValueError("Missing required FireMon credentials")
             
-        self.session = requests.Session()
+        # Create session with optimized connection pooling
+        session = requests.Session()
+        
+        # Configure connection pooling
+        adapter = requests.adapters.HTTPAdapter(
+            max_retries=3,
+            pool_connections=20,  # Increased from default
+            pool_maxsize=50       # Increased from default
+        )
+        session.mount('https://', adapter)
+        session.mount('http://', adapter)
+        
+        # Set default timeouts to avoid hanging requests
+        session.request = functools.partial(session.request, timeout=(10, 120))  # (connect, read)
+        
+        self.session = session
         self.token = None
+        
+        # Initialize device cache containers
+        self._device_cache = {}
+        self._device_cache_by_ip = {}
+        self._device_cache_by_id = {}
 
     def authenticate(self) -> None:
         """
@@ -142,10 +162,59 @@ class FireMonClient:
                     
         return all_devices
 
+    def initialize_device_cache(self) -> None:
+        """
+        Pre-load all devices from FireMon into memory to avoid repeated API calls
+        This dramatically speeds up device lookups
+        """
+        try:
+            logging.info("Pre-loading all FireMon devices into cache for faster lookups")
+            start_time = datetime.now()
+            
+            # Get all devices at once
+            url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/device')
+            params = {
+                'page': 0,
+                'pageSize': 2000  # Use a large page size to get all devices at once
+            }
+            
+            response = self._request('GET', url, params=params)
+            devices = response.get('results', [])
+            
+            # Build cache
+            self._device_cache = {}
+            self._device_cache_by_ip = {}
+            self._device_cache_by_id = {}
+            
+            # Populate device caches with case-insensitive name lookup
+            for device in devices:
+                device_id = device.get('id')
+                name = device.get('name', '')
+                mgmt_ip = device.get('managementIp')
+                
+                # Store by lowercase name for case-insensitive lookup
+                if name:
+                    self._device_cache[name.lower()] = device
+                
+                # Store by IP and ID
+                if mgmt_ip:
+                    self._device_cache_by_ip[mgmt_ip] = device
+                if device_id:
+                    self._device_cache_by_id[device_id] = device
+            
+            elapsed = (datetime.now() - start_time).total_seconds()
+            logging.info(f"Device cache initialized with {len(devices)} devices in {elapsed:.2f} seconds")
+        except Exception as e:
+            logging.error(f"Error initializing device cache: {str(e)}")
+            # Fall back to empty cache
+            self._device_cache = {}
+            self._device_cache_by_ip = {}
+            self._device_cache_by_id = {}
+
     def search_device(self, hostname: str, mgmt_ip: str) -> Optional[Dict[str, Any]]:
         """
         Search for a device by hostname and management IP
-        Uses comprehensive case-insensitive search to match FireMon behavior
+        Uses memory cache for dramatically faster lookups
         
         Args:
             hostname: Device hostname
@@ -157,69 +226,56 @@ class FireMonClient:
         if not hostname and not mgmt_ip:
             logging.warning("Both hostname and mgmt_ip are empty, cannot search for device")
             return None
-            
-        # First try getting all devices and doing client-side matching
-        # This is more reliable than using the API's search capabilities
+        
+        # Initialize cache if not already done
+        if not hasattr(self, '_device_cache') or not self._device_cache:
+            self.initialize_device_cache()
+        
+        # Try to find the device in our cache (case-insensitive hostname lookup)
+        if hostname:
+            hostname_lower = hostname.lower()
+            device = self._device_cache.get(hostname_lower)
+            if device:
+                logging.info(f"Found device {hostname} in cache by hostname")
+                return self._format_device_result(device)
+        
+        # Try IP lookup if hostname lookup failed
+        if mgmt_ip:
+            device = self._device_cache_by_ip.get(mgmt_ip)
+            if device:
+                logging.info(f"Found device with IP {mgmt_ip} in cache")
+                return self._format_device_result(device)
+        
+        # Device not found in cache
+        logging.debug(f"No match found in cache for {hostname} / {mgmt_ip}")
+        return None
+
+    def get_device_by_id(self, device_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get device by ID using cache when available
+        
+        Args:
+            device_id: FireMon device ID
+                
+        Returns:
+            Device dictionary or None if not found
+        """
+        # Initialize cache if not already done
+        if not hasattr(self, '_device_cache_by_id') or not self._device_cache_by_id:
+            self.initialize_device_cache()
+        
+        # Try to get from cache first
+        device = self._device_cache_by_id.get(device_id)
+        if device:
+            return self._format_device_result(device)
+        
+        # Fall back to API call if not in cache
         try:
-            # Get all devices from the domain
-            url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/device')
-            params = {
-                'page': 0,
-                'pageSize': 1000  # Get a large batch to ensure we find matching devices
-            }
-            
-            logging.debug(f"Searching for device with hostname={hostname}, IP={mgmt_ip}")
-            response = self._request('GET', url, params=params)
-            devices = response.get('results', [])
-            
-            # First try exact case-insensitive hostname match
-            if hostname:
-                hostname_lower = hostname.lower()
-                for device in devices:
-                    device_name = device.get('name', '')
-                    if device_name and device_name.lower() == hostname_lower:
-                        logging.info(f"Found exact case-insensitive match by name: {device_name} for {hostname}")
-                        return self._format_device_result(device)
-            
-            # Then try exact IP match
-            if mgmt_ip:
-                for device in devices:
-                    device_ip = device.get('managementIp')
-                    if device_ip == mgmt_ip:
-                        logging.info(f"Found exact match by IP: {device_ip} for device {device.get('name', 'unknown')}")
-                        return self._format_device_result(device)
-                        
-            # If still no match, use the SIQL search as a fallback
-            if hostname:
-                url = urljoin(self.host, '/securitymanager/api/siql/device/paged-search')
-                query = (f"domain {{ id = {self.domain_id} }} AND device {{ "
-                        f"name matches '{hostname}' }}")
-                
-                params = {
-                    'q': query,
-                    'page': 0,
-                    'pageSize': 50,
-                    'sort': 'name'
-                }
-                
-                response = self._request('GET', url, params=params)
-                results = response.get('results', [])
-                
-                if results:
-                    # Find exact case-insensitive match manually
-                    for device in results:
-                        device_name = device.get('name', '')
-                        if device_name.lower() == hostname.lower():
-                            logging.info(f"Found case-insensitive match via SIQL: {device_name} for {hostname}")
-                            return self._format_device_result(device)
-            
-            logging.debug(f"No match found for {hostname} / {mgmt_ip}")
-            return None
-            
+            url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/device/{device_id}')
+            response = self._request('GET', url)
+            return self._format_device_result(response)
         except Exception as e:
-            logging.error(f"Error searching for device {hostname}: {str(e)}")
-            if logging.getLogger().isEnabledFor(logging.DEBUG):
-                logging.exception("Detailed search error trace:")
+            logging.error(f"Error getting device by ID {device_id}: {str(e)}")
             return None
 
     def _format_device_result(self, device: Dict[str, Any]) -> Dict[str, Any]:
