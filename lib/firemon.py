@@ -167,29 +167,46 @@ class FireMonClient:
     def initialize_device_cache(self) -> None:
         """
         Pre-load all devices from FireMon into memory to avoid repeated API calls
-        This dramatically speeds up device lookups
+        This dramatically speeds up device lookups by properly paging through all devices
         """
         try:
             logging.info("Pre-loading all FireMon devices into cache for faster lookups")
             start_time = datetime.now()
             
-            # Get all devices at once
-            url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/device')
-            params = {
-                'page': 0,
-                'pageSize': 200  # Use a large page size to get all devices at once
-            }
+            # Get all devices with proper paging
+            all_devices = []
+            page = 0
+            page_size = 100  # Use a consistent page size
             
-            response = self._request('GET', url, params=params)
-            devices = response.get('results', [])
+            while True:
+                url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/device')
+                params = {
+                    'page': page,
+                    'pageSize': page_size
+                }
+                
+                response = self._request('GET', url, params=params)
+                devices = response.get('results', [])
+                
+                all_devices.extend(devices)
+                
+                # Log progress during initialization
+                if devices:
+                    logging.debug(f"Loaded page {page} with {len(devices)} devices")
+                
+                # If we got fewer devices than the page size, we've reached the end
+                if len(devices) < page_size:
+                    break
+                    
+                page += 1
             
-            # Build cache
+            # Reset cache containers
             self._device_cache = {}
             self._device_cache_by_ip = {}
             self._device_cache_by_id = {}
             
             # Populate device caches with case-insensitive name lookup
-            for device in devices:
+            for device in all_devices:
                 device_id = device.get('id')
                 name = device.get('name', '')
                 mgmt_ip = device.get('managementIp')
@@ -205,7 +222,7 @@ class FireMonClient:
                     self._device_cache_by_id[device_id] = device
             
             elapsed = (datetime.now() - start_time).total_seconds()
-            logging.info(f"Device cache initialized with {len(devices)} devices in {elapsed:.2f} seconds")
+            logging.info(f"Device cache initialized with {len(all_devices)} devices in {elapsed:.2f} seconds")
         except Exception as e:
             logging.error(f"Error initializing device cache: {str(e)}")
             # Fall back to empty cache
