@@ -177,7 +177,7 @@ class FireMonClient:
             url = urljoin(self.host, f'/securitymanager/api/domain/{self.domain_id}/device')
             params = {
                 'page': 0,
-                'pageSize': 2000  # Use a large page size to get all devices at once
+                'pageSize': 200  # Use a large page size to get all devices at once
             }
             
             response = self._request('GET', url, params=params)
