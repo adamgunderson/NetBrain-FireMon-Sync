@@ -144,7 +144,8 @@ class CurlSFTPUploader:
                     '-T', local_path,
                     full_remote_url,
                     '--user', f'{self.username}:{self.password}',
-                    '--pubkey', ''  # Explicitly disable public key auth
+                    '-k',
+                    '--key', '/dev/null'  # Properly disable public key auth
                 ]
                 
                 # Run curl with timeout to avoid hanging
@@ -250,7 +251,8 @@ class CurlSFTPUploader:
                 directory_url,
                 '--list-only',
                 '--user', f'{self.username}:{self.password}',
-                '--pubkey', ''
+                '-k',
+                '--key', '/dev/null'  # Properly disable public key auth
             ]
             
             logging.info(f"Testing directory creation for: {remote_path}")
@@ -385,6 +387,14 @@ def main():
     password = os.getenv('SFTP_PASS')
     port = int(os.getenv('SFTP_PORT', '22'))
     timeout = int(os.getenv('SFTP_TIMEOUT', '120'))
+    
+    # Debug environment variables
+    logging.info(f"SFTP settings from environment:")
+    logging.info(f"  Host: {hostname}")
+    logging.info(f"  User: {username}")
+    logging.info(f"  Password set: {'Yes' if password else 'No'}")
+    logging.info(f"  Port: {port}")
+    logging.info(f"  Timeout: {timeout}")
     
     # Validate settings
     if not hostname:
