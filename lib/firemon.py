@@ -14,9 +14,11 @@ import os
 import json  # Added missing json import
 import logging
 import requests
+import functools
 from typing import Dict, List, Any, Optional
 from urllib.parse import urljoin
 from datetime import datetime
+
 
 class FireMonError(Exception):
     """Base exception for FireMon API errors"""
