@@ -128,11 +128,18 @@ class FireMonClient:
     def get_all_devices(self) -> List[Dict[str, Any]]:
         """
         Get all devices from FireMon
+        Uses in-memory cache when available for better performance
         
         Returns:
             List of device dictionaries
         """
-        logging.debug("Getting all devices from FireMon")
+        # Check if cache is initialized and populated
+        if hasattr(self, '_device_cache') and self._device_cache:
+            logging.debug("Using pre-loaded device cache instead of making API calls")
+            # Return values from all caches combined (device_cache contains all devices)
+            return list(self._device_cache.values())
+        
+        logging.debug("Cache not initialized, getting all devices from FireMon API")
         all_devices = []
         page = 0
         page_size = 100
@@ -161,7 +168,30 @@ class FireMonClient:
                 
             except Exception as e:
                 raise FireMonAPIError(f"Error retrieving devices: {str(e)}")
-                    
+        
+        # Now that we've fetched all devices, initialize the cache with these results
+        # to avoid future API calls
+        if not hasattr(self, '_device_cache') or self._device_cache is None:
+            self._device_cache = {}
+            self._device_cache_by_ip = {}
+            self._device_cache_by_id = {}
+            
+        # Populate the caches with the results we just got
+        for device in all_devices:
+            device_id = device.get('id')
+            name = device.get('name', '')
+            mgmt_ip = device.get('managementIp')
+            
+            # Store by lowercase name for case-insensitive lookup
+            if name:
+                self._device_cache[name.lower()] = device
+            
+            # Store by IP and ID
+            if mgmt_ip:
+                self._device_cache_by_ip[mgmt_ip] = device
+            if device_id:
+                self._device_cache_by_id[device_id] = device
+                
         return all_devices
 
     def initialize_device_cache(self) -> None:

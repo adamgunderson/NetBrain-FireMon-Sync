@@ -92,6 +92,7 @@ class SyncManager:
         # Add reference to config sync method
         self._sync_configs_parallel = self.sync_configs_parallel
 
+
     def run_sync(self) -> Dict[str, Any]:
         """
         Run synchronization process with proper locking and parallelization
@@ -106,14 +107,14 @@ class SyncManager:
                 
                 self.current_sync_start = datetime.utcnow()
 
-                # Pre-load FireMon devices to optimize lookups
+                # Pre-load FireMon devices to optimize lookups - this will populate the cache
                 logging.info("Pre-loading all FireMon devices for faster processing...")
                 self.firemon.initialize_device_cache()
 
-                # Get devices from both systems
+                # Get devices from both systems - FireMon will use the cache
                 logging.info("Retrieving devices from NetBrain and FireMon...")
                 nb_devices = self.netbrain.get_all_devices()
-                fm_devices = self.firemon.get_all_devices()
+                fm_devices = self.firemon.get_all_devices()  # Now uses cache when available
 
                 # Calculate device delta
                 logging.info("Calculating device delta...")
@@ -228,12 +229,13 @@ class SyncManager:
                 logging.info("Skipping config sync in dry run mode")
                 return
 
-            # Get devices from both systems
+            # Get devices from both systems - using FireMon cache when available
             logging.info("Getting devices for config sync")
             nb_devices = self.netbrain.get_all_devices()
+            # Note: No need to initialize cache again if already done in run_sync
             fm_devices = self.firemon.get_all_devices()
 
-            # Create lookup dict for FireMon devices
+            # Create lookup dict for FireMon devices 
             fm_by_hostname = {d['name']: d for d in fm_devices}
 
             # Process configs in parallel
@@ -956,9 +958,9 @@ class SyncManager:
             return
 
         try:
-            # Get devices from both systems
+            # Get devices from both systems - using FireMon cache when available
             logging.info("Getting devices for license sync")
-            nb_devices = self.netbrain.get_all_devices()  # This already filters by configured device types
+            nb_devices = self.netbrain.get_all_devices()
             fm_devices = self.firemon.get_all_devices()
             
             # Create a set of hostnames from NetBrain devices for filtering (case-insensitive)
