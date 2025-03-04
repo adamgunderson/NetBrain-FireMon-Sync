@@ -9,7 +9,28 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') - INFO - Starting root directory uploader" | 
 # Load environment variables from .env
 if [ -f .env ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') - INFO - Loading variables from .env file" | tee -a "$LOG_FILE"
-    export $(grep -v '^#' .env | xargs)
+    # Only process lines that have actual variable assignments without comments
+    while IFS= read -r line; do
+        # Skip comment lines and empty lines
+        [[ $line =~ ^[[:space:]]*# ]] && continue
+        [[ -z $line ]] && continue
+        
+        # Extract variable assignment (stops at first # if there's a comment)
+        var_def=$(echo "$line" | sed -E 's/#.*$//' | tr -d '[:space:]')
+        
+        # Skip if not a valid assignment
+        [[ ! $var_def =~ ^[A-Za-z0-9_]+=.+ ]] && continue
+        
+        # Split into name and value
+        var_name=$(echo "$var_def" | cut -d= -f1)
+        var_value=$(echo "$var_def" | cut -d= -f2-)
+        
+        # Strip quotes from value
+        var_value=$(echo "$var_value" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+        
+        # Export the variable with stripped quotes
+        export "$var_name=$var_value"
+    done < .env
 fi
 
 # Check required variables
