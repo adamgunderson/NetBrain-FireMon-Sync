@@ -686,15 +686,30 @@ class SyncManager:
             raise
 
     def _update_device_if_needed(self, nb_device: Dict[str, Any], fm_device: Dict[str, Any],
-                                device_pack: Dict[str, Any]) -> None:
+                          device_pack: Dict[str, Any]) -> None:
         """Update FireMon device if changes detected"""
         try:
             updates_needed = []
             changes_made = False
+            hostname = nb_device.get('hostname', 'unknown')
+            
+            # Verify that the FireMon device ID exists
+            device_id = fm_device.get('id')
+            if not device_id:
+                logging.error(f"Cannot update device {hostname} without FireMon device ID")
+                with self._changes_lock:
+                    self.changes['devices'].append({
+                        'device': hostname,
+                        'action': 'error',
+                        'error': "Missing FireMon device ID",
+                        'status': 'error'
+                    })
+                return
 
             # Check device pack
             current_pack = fm_device.get('devicePack', {})
-            if (current_pack.get('deviceName') != device_pack['device_name'] or
+            if (current_pack is None or 
+                current_pack.get('deviceName') != device_pack['device_name'] or
                 current_pack.get('artifactId') != device_pack['artifact_id']):
                 updates_needed.append('device_pack')
 
@@ -704,15 +719,16 @@ class SyncManager:
                 if site.startswith("My Network/"):
                     site = site[len("My Network/"):]
                 expected_collector = self.config_manager.get_collector_group_id(site)
-                if expected_collector and str(fm_device.get('collectorGroupId')) != str(expected_collector):
+                current_collector = fm_device.get('collectorGroupId')
+                if expected_collector and current_collector is not None and str(current_collector) != str(expected_collector):
                     updates_needed.append('collector_group')
 
             if updates_needed and not self.config_manager.sync_config.dry_run:
                 # Update device in FireMon
                 update_data = {
-                    'id': fm_device['id'],
-                    'name': fm_device['name'],
-                    'managementIp': fm_device['managementIp']
+                    'id': device_id,
+                    'name': fm_device.get('name', hostname),
+                    'managementIp': fm_device.get('managementIp', nb_device.get('mgmtIP'))
                 }
 
                 if 'device_pack' in updates_needed:
@@ -720,20 +736,34 @@ class SyncManager:
                         'artifactId': device_pack['artifact_id'],
                         'groupId': device_pack['group_id'],
                         'deviceType': device_pack['device_type'],
-                        'deviceName': device_pack['device_name']
+                        'deviceName': device_pack['device_name'],
+                        'type': 'DEVICE_PACK'  # Add required type field
                     }
 
-                if 'collector_group' in updates_needed:
+                if 'collector_group' in updates_needed and expected_collector:
                     update_data['collectorGroupId'] = expected_collector
 
-                self.firemon.update_device(fm_device['id'], update_data)
-                changes_made = True
+                try:
+                    self.firemon.update_device(device_id, update_data)
+                    changes_made = True
+                    logging.info(f"Successfully updated device {hostname} with {updates_needed}")
+                except Exception as e:
+                    error_msg = f"Error updating device {hostname}: {str(e)}"
+                    logging.error(error_msg)
+                    with self._changes_lock:
+                        self.changes['devices'].append({
+                            'device': hostname,
+                            'action': 'error',
+                            'error': error_msg,
+                            'status': 'error'
+                        })
+                    return
 
             # Track changes
             if changes_made or updates_needed:
                 with self._changes_lock:
                     self.changes['devices'].append({
-                        'device': nb_device['hostname'],
+                        'device': hostname,
                         'action': 'update',
                         'status': 'dry_run' if self.config_manager.sync_config.dry_run else 'success',
                         'details': {
@@ -742,13 +772,17 @@ class SyncManager:
                     })
 
         except Exception as e:
-            error_msg = f"Error updating device {nb_device['hostname']}: {str(e)}"
+            hostname = nb_device.get('hostname', 'unknown')
+            error_msg = f"Error updating device {hostname}: {str(e)}"
             logging.error(error_msg)
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.exception("Detailed error trace:")
             with self._changes_lock:
                 self.changes['devices'].append({
-                    'device': nb_device['hostname'],
+                    'device': hostname,
                     'action': 'error',
-                    'error': error_msg
+                    'error': error_msg,
+                    'status': 'error'
                 })
 
     def _sync_device_configs(self, nb_device: Dict[str, Any], fm_device: Dict[str, Any]) -> None:
@@ -760,7 +794,21 @@ class SyncManager:
             fm_device: FireMon device dictionary
         """
         try:
-            hostname = nb_device['hostname']
+            hostname = nb_device.get('hostname', 'unknown')
+            
+            # Verify device ID is present in FireMon device
+            device_id = fm_device.get('id')
+            if not device_id:
+                error_msg = f"Missing device ID for {hostname} in FireMon data"
+                logging.error(error_msg)
+                with self._changes_lock:
+                    self.changes['configs'].append({
+                        'device': hostname,
+                        'action': 'error',
+                        'error': error_msg,
+                        'status': 'error'
+                    })
+                return
             
             # Get device details from NetBrain using hostname instead of ID
             device_details = self.netbrain.get_device_details(hostname)
@@ -774,7 +822,7 @@ class SyncManager:
                 logging.warning(f"No configuration timestamp found for device {hostname}")
                 return
 
-            fm_revision = self.firemon.get_device_revision(fm_device['id'])
+            fm_revision = self.firemon.get_device_revision(device_id)
             
             # Safely access completeDate with error handling
             fm_config_time = None
@@ -897,11 +945,17 @@ class SyncManager:
                     # Import to FireMon
                     try:
                         # Log key information about what we're importing
-                        logging.info(f"Importing {len(fm_configs)} config files for device {hostname} (ID: {fm_device['id']})")
+                        logging.info(f"Importing {len(fm_configs)} config files for device {hostname} (ID: {device_id})")
                         logging.debug(f"Config files being imported: {list(fm_configs.keys())}")
                         
+                        # Check for string content
+                        for filename, content in list(fm_configs.items()):
+                            if not isinstance(content, str):
+                                logging.warning(f"Content for {filename} is not a string. Converting to string.")
+                                fm_configs[filename] = str(content)
+                        
                         result = self.firemon.import_device_config(
-                            fm_device['id'],
+                            device_id,
                             fm_configs,
                             change_user='NetBrain'
                         )
@@ -936,13 +990,14 @@ class SyncManager:
                 logging.info(f"Configuration for device {hostname} is already up to date, skipping update")
 
         except Exception as e:
-            error_msg = f"Error syncing configs for device {nb_device.get('hostname', 'unknown')}: {str(e)}"
+            hostname = nb_device.get('hostname', 'unknown')
+            error_msg = f"Error syncing configs for device {hostname}: {str(e)}"
             logging.error(error_msg)
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 logging.exception("Detailed config sync error trace:")
             with self._changes_lock:
                 self.changes['configs'].append({
-                    'device': nb_device.get('hostname', 'unknown'),
+                    'device': hostname,
                     'action': 'error',
                     'error': error_msg,
                     'status': 'error'

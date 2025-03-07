@@ -421,6 +421,15 @@ class FireMonClient:
             # Log the update details
             logging.debug(f"Updating device ID {device_id} with payload: {json.dumps(device_data, indent=2)}")
             
+            # Make sure the device_data has required fields
+            if 'id' not in device_data:
+                device_data['id'] = device_id
+                
+            # Ensure devicePack has all required fields
+            if 'devicePack' in device_data:
+                if 'type' not in device_data['devicePack']:
+                    device_data['devicePack']['type'] = 'DEVICE_PACK'
+            
             response = self.session.put(url, json=device_data)
             
             # Handle errors with detailed information
@@ -458,7 +467,7 @@ class FireMonClient:
             raise FireMonError(error_msg)
 
     def import_device_config(self, device_id: int, files: Dict[str, str], 
-                       change_user: str = 'NetBrain') -> Dict[str, Any]:
+                   change_user: str = 'NetBrain') -> Dict[str, Any]:
         """
         Import device configuration files to FireMon
         
@@ -480,8 +489,12 @@ class FireMonClient:
         }
         
         try:
+            # Log what we're uploading for debug purposes
+            logging.debug(f"Preparing to upload {len(files)} configuration files for device ID {device_id}")
+            logging.debug(f"Configuration files: {list(files.keys())}")
+            
             # Create proper multipart form data with indexed file fields
-            # Each file needs to be named "file[index]" with filename attribute set correctly
+            # Each file needs to be named "file[index]"
             multipart_form_data = {}
             
             for i, (filename, content) in enumerate(files.items()):
@@ -489,11 +502,30 @@ class FireMonClient:
                 # The key needs to be 'file[i]' exactly as the API expects
                 field_name = f'file[{i}]'
                 
-                # Log what we're uploading for debug purposes
-                logging.debug(f"Adding file to upload: {field_name}, filename={filename}, content length={len(content)}")
+                # Validate content is a string
+                if not isinstance(content, str):
+                    logging.warning(f"Content for {filename} is not a string. Converting to string.")
+                    content = str(content)
+                
+                # Check that content is not empty
+                if not content or len(content.strip()) < 10:
+                    logging.warning(f"Content for {filename} is too short or empty. Skipping.")
+                    continue
+                    
+                # Log file being uploaded
+                content_size = len(content)
+                logging.debug(f"Adding file to upload: {field_name}, filename={filename}, content size={content_size} bytes")
                 
                 # Create the multipart form data entry with the proper filename
+                # Note: We're providing the content as a string, not a file object
+                # We also need to specify the content type correctly
                 multipart_form_data[field_name] = (filename, content, 'application/octet-stream')
+            
+            # Check if we have any files to upload
+            if not multipart_form_data:
+                error_msg = f"No valid configuration files to upload for device ID {device_id}"
+                logging.error(error_msg)
+                raise FireMonAPIError(error_msg)
             
             # Log request details
             logging.debug(f"Sending config import request to FireMon: URL={url}, params={params}, "
