@@ -503,8 +503,34 @@ class NetBrainClient:
         """
         if not content:
             return content
+            
+        # Special handling for XML output - preserve XML content
+        if 'display xml' in command:
+            # For XML content, only do minimal processing to preserve the XML structure
+            lines = content.split('\n')
+            
+            # Check if any line contains XML content
+            has_xml = any('<' in line and '>' in line for line in lines)
+            
+            if has_xml:
+                # Minimal processing for XML content
+                # Remove lines with prompts at beginning
+                while lines and (lines[0].strip().endswith('>') or lines[0].strip().endswith('#')):
+                    lines.pop(0)
+                    
+                # Remove lines with prompts at end
+                while lines and (lines[-1].strip().endswith('>') or lines[-1].strip().endswith('#')):
+                    lines.pop()
+                    
+                # Keep XML content, just joined with newlines
+                processed_content = '\n'.join(lines).strip()
+                
+                # Log detailed information for debugging
+                logging.debug(f"XML content detected. Minimally processed from {len(content)} to {len(processed_content)} chars")
+                
+                return processed_content
 
-        # Split content into lines
+        # Regular processing for non-XML content
         lines = content.split('\n')
         
         # Remove empty lines at start and end

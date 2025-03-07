@@ -872,8 +872,16 @@ class SyncManager:
                         response = self.netbrain._request('GET', url, params=params)
                         if response.get('statusCode') == 790200:  # Success
                             content = response.get('content', '')
-                            if content:
-                                configs[command] = self.netbrain._process_command_output(content, command)
+                            
+                            # Process the content
+                            processed_content = self.netbrain._process_command_output(content, command)
+                            
+                            # Enhanced logging to track content processing
+                            if content and not processed_content:
+                                logging.warning(f"Command '{command}' content was non-empty ({len(content)} chars) "
+                                              f"but became empty after processing for {hostname}")
+                            elif content:
+                                configs[command] = processed_content
                                 logging.debug(f"Successfully retrieved command '{command}' for device {hostname} "
                                             f"(length: {len(configs[command])} chars)")
                             else:
@@ -891,14 +899,22 @@ class SyncManager:
                     invalid_cmds = []
                     
                     for command, content in configs.items():
-                        # Ensure content is not empty or too small to be valid
-                        if not content or len(content.strip()) < 10:
+                        # Special handling for XML commands - even minimal content might be valid
+                        is_xml_command = 'display xml' in command
+                        
+                        # Relaxed validation for XML content
+                        if is_xml_command and content and ('<' in content and '>' in content):
+                            # Content has XML elements, consider it valid regardless of length
+                            valid_configs[command] = content
+                            logging.debug(f"XML content detected and validated for command '{command}' on {hostname}")
+                        # Standard validation for other commands
+                        elif not content or len(content.strip()) < 10:
                             invalid_cmds.append(command)
                             logging.warning(f"Skipping invalid/empty content for command '{command}' on device {hostname}")
                             continue
-                        
-                        # Add valid content
-                        valid_configs[command] = content
+                        else:
+                            # Non-XML content with sufficient length
+                            valid_configs[command] = content
                     
                     if invalid_cmds:
                         logging.warning(f"Skipped {len(invalid_cmds)} commands with invalid content for device {hostname}")
@@ -926,6 +942,7 @@ class SyncManager:
                         fm_filename = command_mappings.get(command)
                         if fm_filename and content:
                             fm_configs[fm_filename] = content
+                            logging.debug(f"Mapped command '{command}' to filename '{fm_filename}' for device {hostname}")
                         elif content:
                             # Use a default mapping if no mapping found but we have content
                             default_filename = command.replace(' ', '_').lower() + '.txt'
@@ -942,6 +959,9 @@ class SyncManager:
                                 'status': 'error'
                             })
                         return
+                    
+                    # Log which files will be uploaded
+                    logging.info(f"Will upload {len(fm_configs)} config files for {hostname}: {', '.join(fm_configs.keys())}")
 
                     # Import to FireMon
                     try:
