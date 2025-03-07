@@ -425,6 +425,9 @@ class FireMonClient:
             if 'id' not in device_data:
                 device_data['id'] = device_id
                 
+            # Add domainId - this fixes the 'domainId must not be NULL' error
+            device_data['domainId'] = self.domain_id
+                
             # Ensure devicePack has all required fields
             if 'devicePack' in device_data:
                 if 'type' not in device_data['devicePack']:
@@ -493,15 +496,18 @@ class FireMonClient:
             logging.debug(f"Preparing to upload {len(files)} configuration files for device ID {device_id}")
             logging.debug(f"Configuration files: {list(files.keys())}")
             
-            # Create proper multipart form data with indexed file fields
-            # Each file needs to be named "file[index]"
-            multipart_form_data = {}
+            # Rather than using requests' built-in files parameter, we'll manually create the multipart form data
+            import io
+            import uuid
             
+            # Create a unique boundary for the multipart form
+            boundary = f"---WebKitFormBoundary{uuid.uuid4().hex[:12]}"
+            
+            # Create the multipart form data manually
+            body = io.BytesIO()
+            
+            # Add each file to the form data
             for i, (filename, content) in enumerate(files.items()):
-                # Create a file-like object from the content string
-                # The key needs to be 'file[i]' exactly as the API expects
-                field_name = f'file[{i}]'
-                
                 # Validate content is a string
                 if not isinstance(content, str):
                     logging.warning(f"Content for {filename} is not a string. Converting to string.")
@@ -512,28 +518,51 @@ class FireMonClient:
                     logging.warning(f"Content for {filename} is too short or empty. Skipping.")
                     continue
                     
-                # Log file being uploaded
-                content_size = len(content)
-                logging.debug(f"Adding file to upload: {field_name}, filename={filename}, content size={content_size} bytes")
+                # Convert string content to bytes
+                content_bytes = content.encode('utf-8')
                 
-                # Create the multipart form data entry with the proper filename
-                # Note: We're providing the content as a string, not a file object
-                # We also need to specify the content type correctly
-                multipart_form_data[field_name] = (filename, content, 'application/octet-stream')
+                # Add file boundary
+                body.write(f"--{boundary}\r\n".encode('utf-8'))
+                body.write(f'Content-Disposition: form-data; name="file[{i}]"; filename="{filename}"\r\n'.encode('utf-8'))
+                body.write(b'Content-Type: application/octet-stream\r\n\r\n')
+                
+                # Add file content
+                body.write(content_bytes)
+                body.write(b'\r\n')
+
+            # Add closing boundary
+            body.write(f"--{boundary}--\r\n".encode('utf-8'))
+            
+            # Get the complete body data
+            body_data = body.getvalue()
             
             # Check if we have any files to upload
-            if not multipart_form_data:
+            if not body_data or len(body_data) < 50:  # Minimal size for a valid form
                 error_msg = f"No valid configuration files to upload for device ID {device_id}"
                 logging.error(error_msg)
                 raise FireMonAPIError(error_msg)
             
-            # Log request details
-            logging.debug(f"Sending config import request to FireMon: URL={url}, params={params}, "
-                         f"Uploading {len(multipart_form_data)} files")
+            # Set up headers for multipart form data
+            headers = {
+                'Content-Type': f'multipart/form-data; boundary={boundary}',
+                'Content-Length': str(len(body_data))
+            }
             
-            # Make the request using the requests library's files parameter
-            # This properly handles the multipart/form-data encoding
-            response = self.session.post(url, params=params, files=multipart_form_data)
+            # Add Authorization header if token exists
+            if hasattr(self, 'token') and self.token:
+                headers['Authorization'] = f'Bearer {self.token}'
+            
+            # Log request details
+            logging.debug(f"Sending config import request to FireMon: URL={url}, params={params}")
+            logging.debug(f"Headers: {headers}")
+            
+            # Make the request with the manually created multipart form data
+            response = self.session.post(
+                url, 
+                params=params, 
+                data=body_data,
+                headers=headers
+            )
             
             # Check response status
             if not response.ok:

@@ -728,7 +728,8 @@ class SyncManager:
                 update_data = {
                     'id': device_id,
                     'name': fm_device.get('name', hostname),
-                    'managementIp': fm_device.get('managementIp', nb_device.get('mgmtIP'))
+                    'managementIp': fm_device.get('managementIp', nb_device.get('mgmtIP')),
+                    'domainId': self.firemon.domain_id  # Add domainId here
                 }
 
                 if 'device_pack' in updates_needed:
