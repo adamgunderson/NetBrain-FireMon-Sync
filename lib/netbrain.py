@@ -493,14 +493,14 @@ class NetBrainClient:
     def _process_command_output(self, content: str, command: str) -> str:
         """
         Process command output to remove shell prompts and command strings
-        Improved to handle various prompt formats and XML content
+        Only removes the first line if it contains a command prompt and the command
         
         Args:
             content: Raw command output
             command: Command that was executed
             
         Returns:
-            Processed command output with prompts and command input removed
+            Processed command output with prompt and command input removed
         """
         if not content:
             return content
@@ -512,78 +512,23 @@ class NetBrainClient:
             
         lines = content.split('\n')
         
-        # Remove empty lines at start and end
-        while lines and not lines[0].strip():
-            lines.pop(0)
-        while lines and not lines[-1].strip():
-            lines.pop()
-            
         if not lines:
             return ''
 
-        # Check for prompt in the first line
+        # Only check the first line for prompt and command
         first_line = lines[0]
         
-        # Common prompt patterns to recognize
-        prompt_patterns = [
-            '>',           # Basic prompt
-            '#',           # Enable/privileged prompt
-            '$',           # Unix shell prompt
-            '%',           # Alternative prompt
-            '@',           # Often in username@hostname format
-        ]
+        # Common prompt characters to identify a command line
+        prompt_chars = ['>', '#', '$', '%', '@']
         
-        # Check if the command is in the first line
-        if command in first_line:
-            # Look for prompt characters
-            has_prompt = False
-            for pattern in prompt_patterns:
-                if pattern in first_line.split(command)[0]:
-                    # Found a prompt character before the command
-                    has_prompt = True
-                    break
-                    
-            # If prompt is found or just the command is there, remove first line
-            if has_prompt or first_line.strip() == command:
-                logging.debug(f"Removing first line containing command: '{first_line}'")
-                lines = lines[1:]
+        # Check if the first line contains a prompt character AND the command
+        if any(char in first_line for char in prompt_chars) and command in first_line:
+            logging.debug(f"Removing first line containing command prompt: '{first_line}'")
+            # Remove only the first line, keep all the rest
+            return '\n'.join(lines[1:])
         
-        # Special handling for XML content
-        is_xml_content = any('<' in line and '>' in line for line in lines)
-        if is_xml_content:
-            # For XML, be extra careful about what we remove
-            logging.debug("XML content detected, using careful processing")
-            
-            # Remove only lines with obvious prompts
-            while lines and any(pattern in lines[0] for pattern in prompt_patterns):
-                logging.debug(f"Removing prompt line from XML: '{lines[0]}'")
-                lines.pop(0)
-        
-        # Remove trailing prompts, banners, or exit commands
-        trailing_patterns = [
-            '>',        # Command prompt
-            '#',        # Enable prompt
-            'exit',     # Exit command
-            'logout',   # Logout command
-            'banner',   # Banner message
-            '--More--'  # Pagination marker
-        ]
-        
-        while lines and any(pattern in lines[-1] for pattern in trailing_patterns):
-            logging.debug(f"Removing trailing line: '{lines[-1]}'")
-            lines.pop()
-
-        # Rejoin lines and strip any extra whitespace
-        result = '\n'.join(lines).strip()
-        
-        # Log the changes if in debug mode
-        if logging.getLogger().isEnabledFor(logging.DEBUG):
-            original_len = len(content) if content else 0
-            result_len = len(result) if result else 0
-            if original_len != result_len:
-                logging.debug(f"Command output processing: {original_len} chars → {result_len} chars")
-        
-        return result
+        # If first line doesn't match our criteria, return the original content
+        return content
 
     def get_all_devices(self) -> List[Dict[str, Any]]:
         """
