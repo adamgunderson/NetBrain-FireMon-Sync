@@ -493,44 +493,23 @@ class NetBrainClient:
     def _process_command_output(self, content: str, command: str) -> str:
         """
         Process command output to remove shell prompts and command strings
+        Improved to handle various prompt formats and XML content
         
         Args:
             content: Raw command output
             command: Command that was executed
             
         Returns:
-            Processed command output
+            Processed command output with prompts and command input removed
         """
         if not content:
             return content
             
-        # Special handling for XML output - preserve XML content
-        if 'display xml' in command:
-            # For XML content, only do minimal processing to preserve the XML structure
-            lines = content.split('\n')
+        # Check if prompt trimming is disabled via environment variable
+        if os.getenv('TRIM_COMMAND_PROMPTS', 'true').lower() != 'true':
+            logging.debug("Command prompt trimming is disabled")
+            return content
             
-            # Check if any line contains XML content
-            has_xml = any('<' in line and '>' in line for line in lines)
-            
-            if has_xml:
-                # Minimal processing for XML content
-                # Remove lines with prompts at beginning
-                while lines and (lines[0].strip().endswith('>') or lines[0].strip().endswith('#')):
-                    lines.pop(0)
-                    
-                # Remove lines with prompts at end
-                while lines and (lines[-1].strip().endswith('>') or lines[-1].strip().endswith('#')):
-                    lines.pop()
-                    
-                # Keep XML content, just joined with newlines
-                processed_content = '\n'.join(lines).strip()
-                
-                # Log detailed information for debugging
-                logging.debug(f"XML content detected. Minimally processed from {len(content)} to {len(processed_content)} chars")
-                
-                return processed_content
-
-        # Regular processing for non-XML content
         lines = content.split('\n')
         
         # Remove empty lines at start and end
@@ -542,21 +521,69 @@ class NetBrainClient:
         if not lines:
             return ''
 
-        # Remove prompt and command from first line
+        # Check for prompt in the first line
         first_line = lines[0]
-        if ('>' in first_line or '#' in first_line) and command in first_line:
-            # Found a prompt with command, remove first line
-            lines = lines[1:]
-        elif command in first_line:
-            # Found the command alone, remove first line
-            lines = lines[1:]
-
-        # Remove any trailing CLI prompts or banners
-        while lines and ('>' in lines[-1] or '#' in lines[-1] or 'banner' in lines[-1].lower()):
+        
+        # Common prompt patterns to recognize
+        prompt_patterns = [
+            '>',           # Basic prompt
+            '#',           # Enable/privileged prompt
+            '$',           # Unix shell prompt
+            '%',           # Alternative prompt
+            '@',           # Often in username@hostname format
+        ]
+        
+        # Check if the command is in the first line
+        if command in first_line:
+            # Look for prompt characters
+            has_prompt = False
+            for pattern in prompt_patterns:
+                if pattern in first_line.split(command)[0]:
+                    # Found a prompt character before the command
+                    has_prompt = True
+                    break
+                    
+            # If prompt is found or just the command is there, remove first line
+            if has_prompt or first_line.strip() == command:
+                logging.debug(f"Removing first line containing command: '{first_line}'")
+                lines = lines[1:]
+        
+        # Special handling for XML content
+        is_xml_content = any('<' in line and '>' in line for line in lines)
+        if is_xml_content:
+            # For XML, be extra careful about what we remove
+            logging.debug("XML content detected, using careful processing")
+            
+            # Remove only lines with obvious prompts
+            while lines and any(pattern in lines[0] for pattern in prompt_patterns):
+                logging.debug(f"Removing prompt line from XML: '{lines[0]}'")
+                lines.pop(0)
+        
+        # Remove trailing prompts, banners, or exit commands
+        trailing_patterns = [
+            '>',        # Command prompt
+            '#',        # Enable prompt
+            'exit',     # Exit command
+            'logout',   # Logout command
+            'banner',   # Banner message
+            '--More--'  # Pagination marker
+        ]
+        
+        while lines and any(pattern in lines[-1] for pattern in trailing_patterns):
+            logging.debug(f"Removing trailing line: '{lines[-1]}'")
             lines.pop()
 
         # Rejoin lines and strip any extra whitespace
-        return '\n'.join(lines).strip()
+        result = '\n'.join(lines).strip()
+        
+        # Log the changes if in debug mode
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            original_len = len(content) if content else 0
+            result_len = len(result) if result else 0
+            if original_len != result_len:
+                logging.debug(f"Command output processing: {original_len} chars → {result_len} chars")
+        
+        return result
 
     def get_all_devices(self) -> List[Dict[str, Any]]:
         """

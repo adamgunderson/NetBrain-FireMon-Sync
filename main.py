@@ -87,6 +87,13 @@ def parse_args():
         type=str,
         help='Path to sync mappings configuration file'
     )
+    
+    # New argument for config processing options
+    parser.add_argument(
+        '--force-config-update',
+        action='store_true',
+        help='Force config updates regardless of timestamps (overrides FORCE_CONFIG_UPDATE env var)'
+    )
 
     return parser.parse_args()
 
@@ -158,10 +165,18 @@ def main():
     # Load environment variables first
     load_dotenv()
     
+    # Apply command line arguments that override environment variables
+    if args.force_config_update:
+        os.environ['FORCE_CONFIG_UPDATE'] = 'true'
+        
     # Initialize logging
     log_level = args.log_level or os.getenv('LOG_LEVEL', 'INFO')
     setup_logging(level=log_level)
     logging.info("Starting NetBrain to FireMon Sync Service")
+
+    # Log if force config update is enabled
+    if os.getenv('FORCE_CONFIG_UPDATE', 'false').lower() == 'true':
+        logging.info("Force config update is enabled - configs will be updated regardless of timestamps")
 
     try:
         # Initialize configuration

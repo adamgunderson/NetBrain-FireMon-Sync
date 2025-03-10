@@ -145,6 +145,45 @@ The service performs the following:
    - Updates device configurations in FireMon when newer in NetBrain
    - Maps configuration files according to device type
 
+## Handling Command Prompts
+
+The sync service now automatically trims command prompts and command input from configuration files. This is particularly useful for devices like Juniper SRX where the output includes the command that was executed at the beginning of the file.
+
+For example, if the command output begins with:
+```
+netops-monitoring@cph04-fpi-main>show arp no-resolve | display xml | no-more
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/15.1X49/junos">
+    ...
+```
+
+The sync service will automatically remove the command prompt line, resulting in:
+```
+<rpc-reply xmlns:junos="http://xml.juniper.net/junos/15.1X49/junos">
+    ...
+```
+
+## Force Configuration Updates
+
+You can now force the sync service to update device configurations in FireMon regardless of timestamp comparisons. This is useful in scenarios where:
+- You want to resync all configurations after a system change
+- You suspect timestamps might be inaccurate
+- You need to rebuild configurations in FireMon
+
+To enable forced config updates, set the following environment variable in your `.env` file:
+```
+FORCE_CONFIG_UPDATE=true
+```
+
+When this option is enabled, the service will:
+- Skip the timestamp comparison step
+- Always import configuration data from NetBrain to FireMon
+- Log that updates were forced rather than based on timestamp comparison
+
+This setting is particularly useful when running in "configs" sync mode:
+```bash
+python3 main.py --mode configs
+```
+
 ### Logging
 
 Logs are written to both console and file:
