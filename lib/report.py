@@ -213,7 +213,7 @@ class ReportManager:
     def generate_console_summary(self, report: Dict[str, Any]) -> str:
         """
         Generate human-readable console summary based on sync mode
-        Shows relevant information based on the specific sync mode
+        Enhanced to show detailed group information in groups mode
         
         Args:
             report: Report dictionary
@@ -239,6 +239,7 @@ class ReportManager:
             # Content varies based on sync mode and dry run status
             if report.get('dry_run'):
                 if sync_mode == 'devices':
+                    # Device mode content - unchanged
                     delta_stats = report.get('summary', {}).get('delta', {})
                     content = f"""
     Device Analysis:
@@ -249,32 +250,61 @@ class ReportManager:
     - Devices with Differences: {delta_stats.get('different', 0)}
     """
                 elif sync_mode == 'groups':
-                    # Special handling for group sync mode in dry run
-                    delta = report.get('delta', {})
+                    # Enhanced group mode content
+                    group_analysis = report.get('group_analysis', {})
+                    groups_to_create = group_analysis.get('groups_to_create', [])
+                    groups_to_update = group_analysis.get('groups_to_update', [])
+                    orphaned_groups = group_analysis.get('orphaned_groups', [])
+                    device_assignments = group_analysis.get('device_assignments', [])
                     
-                    # Group-specific information from delta
-                    group_changes = []
-                    for change_type in ['create', 'update', 'orphaned']:
-                        count = len([c for c in report.get('changes', {}).get('groups', []) 
-                                    if c.get('action') == change_type])
-                        if count > 0:
-                            group_changes.append(f"- Groups to {change_type.capitalize()}: {count}")
-                    
-                    # If no specific group changes found, look in the delta
-                    if not group_changes and 'delta' in report:
-                        for site in report.get('delta', {}).get('sites', []):
-                            site_path = site.get('sitePath', 'Unknown')
-                            group_changes.append(f"- Site to Sync: {site_path}")
-                    
-                    # If still no changes found, show a default message
-                    if not group_changes:
-                        group_changes = ["- No specific group changes detected"]
-                    
+                    # Generate group summary
                     content = f"""
-    Group Analysis:
-    {''.join(group_changes)}
+    Group Synchronization Analysis:
+    - Groups to Create: {len(groups_to_create)}
+    - Groups to Update: {len(groups_to_update)}
+    - Orphaned Groups (will be preserved): {len(orphaned_groups)}
+    - Device Assignments to Process: {len(device_assignments)}
     """
+                    
+                    # Add details about groups to create (limit to 15 for readability)
+                    if groups_to_create:
+                        create_limit = min(15, len(groups_to_create))
+                        content += "\nGroups That Will Be Created in FireMon:\n"
+                        for i, group in enumerate(groups_to_create[:create_limit]):
+                            content += f"  {i+1}. {group['name']} (Path: {group['path']})\n"
+                        if len(groups_to_create) > create_limit:
+                            content += f"  ... and {len(groups_to_create) - create_limit} more\n"
+                    
+                    # Add details about groups to update (limit to 10)
+                    if groups_to_update:
+                        update_limit = min(10, len(groups_to_update))
+                        content += "\nGroups That Will Be Updated in FireMon:\n"
+                        for i, group in enumerate(groups_to_update[:update_limit]):
+                            content += f"  {i+1}. {group['name']} (Path: {group['path']})\n"
+                        if len(groups_to_update) > update_limit:
+                            content += f"  ... and {len(groups_to_update) - update_limit} more\n"
+                    
+                    # Add details about device assignments (limit to 15)
+                    if device_assignments:
+                        assign_limit = min(15, len(device_assignments))
+                        content += "\nDevices That Will Be Assigned to Groups:\n"
+                        for i, assignment in enumerate(device_assignments[:assign_limit]):
+                            status = "Create group first" if not assignment['group_exists'] else "Ready"
+                            content += f"  {i+1}. {assignment['device_name']} → {assignment['leaf_group']} ({status})\n"
+                        if len(device_assignments) > assign_limit:
+                            content += f"  ... and {len(device_assignments) - assign_limit} more\n"
+                    
+                    # Add details about orphaned groups (limit to 5)
+                    if orphaned_groups:
+                        orphan_limit = min(5, len(orphaned_groups))
+                        content += "\nOrphaned Groups (Will Be Preserved):\n"
+                        for i, group in enumerate(orphaned_groups[:orphan_limit]):
+                            content += f"  {i+1}. {group['name']} (ID: {group['id']})\n"
+                        if len(orphaned_groups) > orphan_limit:
+                            content += f"  ... and {len(orphaned_groups) - orphan_limit} more\n"
+                    
                 elif sync_mode == 'licenses':
+                    # License mode content - unchanged
                     content = f"""
     License Analysis:
     - Total Devices to Process: {summary.get('licenses', {}).get('total_processed', 0)}
@@ -282,12 +312,14 @@ class ReportManager:
     - Licenses to Remove: {summary.get('licenses', {}).get('to_remove', 0)}
     """
                 elif sync_mode == 'configs':
+                    # Config mode content - unchanged
                     content = f"""
     Configuration Analysis:
     - Total Devices to Check: {summary.get('configs', {}).get('total_processed', 0)}
     - Configs Needing Update: {summary.get('configs', {}).get('to_update', 0)}
     """
                 else:  # full mode
+                    # Full mode content - unchanged
                     delta_stats = report.get('summary', {}).get('delta', {})
                     content = f"""
     Full Sync Analysis:
@@ -308,7 +340,7 @@ class ReportManager:
     - Configs to Update: {summary.get('configs', {}).get('to_update', 0)}
     """
             else:
-                # Non-dry run mode - show actual changes
+                # Non-dry run mode - show actual changes (no changes needed here)
                 if sync_mode == 'devices':
                     device_summary = summary.get('devices', {})
                     content = f"""
@@ -405,6 +437,8 @@ class ReportManager:
 
         except Exception as e:
             logging.error(f"Error generating console summary: {str(e)}")
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.exception("Detailed error trace for console summary:")
             return """
     Error generating sync summary.
     Please check the logs and report file for details.

@@ -1183,7 +1183,7 @@ class SyncManager:
 
     def _generate_dry_run_report(self, nb_devices: List[Dict[str, Any]], 
                          fm_devices: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Generate report for dry run mode with enhanced group information"""
+        """Generate enhanced report for dry run mode with detailed group information"""
         # Start with the basic report structure
         report = {
             'timestamp': datetime.utcnow().isoformat(),
@@ -1206,28 +1206,19 @@ class SyncManager:
         # Add group-specific data when in groups mode
         if self.config_manager.sync_config.sync_mode == 'groups':
             try:
-                # Get sites from NetBrain if available
-                if hasattr(self, 'netbrain') and hasattr(self.netbrain, 'get_sites'):
-                    nb_sites = self.netbrain.get_sites()
-                    report['delta']['sites'] = nb_sites
-                    report['summary']['groups'] = {
-                        'total_sites': len(nb_sites),
-                        'to_create': 0,
-                        'to_update': 0
-                    }
-                    
-                    # Get FireMon groups
-                    if hasattr(self, 'firemon') and hasattr(self.firemon, 'get_device_groups'):
-                        fm_groups = self.firemon.get_device_groups()
-                        fm_group_names = {g['name'] for g in fm_groups}
-                        
-                        # Count sites that would need group creation
-                        site_names = {site['sitePath'].split('/')[-1] for site in nb_sites if 'sitePath' in site}
-                        report['summary']['groups']['to_create'] = len(site_names - fm_group_names)
-                        
-                        # Placeholder for common names that might need updates
-                        common_names = site_names.intersection(fm_group_names)
-                        report['summary']['groups']['to_update'] = len(common_names)
+                # Get detailed group information
+                group_analysis = self._analyze_group_sync_for_dry_run(nb_devices)
+                
+                # Add group analysis to report
+                report['group_analysis'] = group_analysis
+                
+                # Add summary counts
+                report['summary']['groups'] = {
+                    'total_groups_to_create': len(group_analysis.get('groups_to_create', [])),
+                    'total_groups_to_update': len(group_analysis.get('groups_to_update', [])),
+                    'total_orphaned_groups': len(group_analysis.get('orphaned_groups', [])),
+                    'total_device_assignments': len(group_analysis.get('device_assignments', []))
+                }
                     
                 # Add any group changes already tracked
                 if hasattr(self, 'changes') and 'groups' in self.changes:
@@ -1235,8 +1226,136 @@ class SyncManager:
                     
             except Exception as e:
                 logging.error(f"Error generating group data for dry run report: {str(e)}")
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    logging.exception("Detailed error trace:")
         
         return report
+
+    def _analyze_group_sync_for_dry_run(self, nb_devices: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Analyze what would happen during group synchronization
+        
+        Args:
+            nb_devices: List of NetBrain devices
+            
+        Returns:
+            Dictionary containing detailed analysis of group changes
+        """
+        result = {
+            'groups_to_create': [],
+            'groups_to_update': [],
+            'orphaned_groups': [],
+            'device_assignments': []
+        }
+        
+        try:
+            # Get NetBrain sites
+            nb_sites = []
+            if hasattr(self, 'netbrain') and hasattr(self.netbrain, 'get_sites'):
+                nb_sites = self.netbrain.get_sites()
+            
+            # Get FireMon groups
+            fm_groups = []
+            if hasattr(self, 'firemon') and hasattr(self.firemon, 'get_device_groups'):
+                fm_groups = self.firemon.get_device_groups()
+            
+            # Create maps for easier lookup
+            fm_groups_by_name = {g['name']: g for g in fm_groups}
+            
+            # Process each site to determine if group creation/update would be needed
+            site_paths = set()
+            for site in nb_sites:
+                site_path = site.get('sitePath', '')
+                if not site_path or site_path == 'My Network':
+                    continue  # Skip root group
+                    
+                site_paths.add(site_path)
+                path_parts = site_path.split('/')
+                
+                # Skip the root group
+                if len(path_parts) > 1 and path_parts[0] == 'My Network':
+                    path_parts = path_parts[1:]
+                    
+                # Process each part of the path
+                current_path = ''
+                for part in path_parts:
+                    if current_path:
+                        current_path += '/'
+                    current_path += part
+                    
+                    # Check if this group exists in FireMon
+                    if part in fm_groups_by_name:
+                        # Group exists - may need update
+                        result['groups_to_update'].append({
+                            'name': part,
+                            'path': current_path,
+                            'site_id': site.get('siteId'),
+                            'firemon_id': fm_groups_by_name[part]['id']
+                        })
+                    else:
+                        # Group doesn't exist - needs creation
+                        result['groups_to_create'].append({
+                            'name': part,
+                            'path': current_path,
+                            'site_id': site.get('siteId')
+                        })
+            
+            # Find orphaned groups (in FireMon but not mapped to NetBrain sites)
+            for group in fm_groups:
+                # Skip system groups and root groups
+                if group.get('system', False) or not group.get('parentId'):
+                    continue
+                    
+                # Check if this group corresponds to any NetBrain site
+                group_name = group['name']
+                found_in_netbrain = False
+                
+                for site_path in site_paths:
+                    if '/' + group_name in site_path or site_path.endswith(group_name):
+                        found_in_netbrain = True
+                        break
+                        
+                if not found_in_netbrain:
+                    result['orphaned_groups'].append({
+                        'name': group_name,
+                        'id': group['id'],
+                        'parent_id': group.get('parentId')
+                    })
+            
+            # Analyze device assignments to leaf groups
+            for device in nb_devices:
+                site_path = device.get('site', '')
+                if not site_path or site_path == 'My Network':
+                    continue
+                    
+                # Get leaf group (last part of the path)
+                path_parts = site_path.split('/')
+                if len(path_parts) <= 1:
+                    continue
+                    
+                leaf_group_name = path_parts[-1]
+                full_path = site_path
+                
+                # Check if leaf group exists in FireMon
+                fm_group = fm_groups_by_name.get(leaf_group_name)
+                
+                result['device_assignments'].append({
+                    'device_name': device.get('hostname', 'Unknown'),
+                    'device_ip': device.get('mgmtIP', 'Unknown'),
+                    'device_id': device.get('id', 'Unknown'),
+                    'leaf_group': leaf_group_name,
+                    'full_path': full_path,
+                    'group_exists': fm_group is not None,
+                    'group_id': fm_group['id'] if fm_group else None
+                })
+            
+            return result
+            
+        except Exception as e:
+            logging.error(f"Error analyzing group sync for dry run: {str(e)}")
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.exception("Detailed error trace:")
+            return result
 
     def _generate_summary(self) -> Dict[str, Any]:
         """Generate summary of sync operations"""
