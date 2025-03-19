@@ -239,7 +239,7 @@ class ReportManager:
             # Content varies based on sync mode and dry run status
             if report.get('dry_run'):
                 if sync_mode == 'devices':
-                    delta_stats = report.get('summary', {}).get('devices', {})
+                    delta_stats = report.get('summary', {}).get('delta', {})
                     content = f"""
     Device Analysis:
     - Total in NetBrain: {delta_stats.get('total_in_netbrain', 0)}
@@ -249,11 +249,30 @@ class ReportManager:
     - Devices with Differences: {delta_stats.get('different', 0)}
     """
                 elif sync_mode == 'groups':
+                    # Special handling for group sync mode in dry run
+                    delta = report.get('delta', {})
+                    
+                    # Group-specific information from delta
+                    group_changes = []
+                    for change_type in ['create', 'update', 'orphaned']:
+                        count = len([c for c in report.get('changes', {}).get('groups', []) 
+                                    if c.get('action') == change_type])
+                        if count > 0:
+                            group_changes.append(f"- Groups to {change_type.capitalize()}: {count}")
+                    
+                    # If no specific group changes found, look in the delta
+                    if not group_changes and 'delta' in report:
+                        for site in report.get('delta', {}).get('sites', []):
+                            site_path = site.get('sitePath', 'Unknown')
+                            group_changes.append(f"- Site to Sync: {site_path}")
+                    
+                    # If still no changes found, show a default message
+                    if not group_changes:
+                        group_changes = ["- No specific group changes detected"]
+                    
                     content = f"""
     Group Analysis:
-    - Total Groups in NetBrain: {summary.get('groups', {}).get('total_processed', 0)}
-    - Groups to Create: {summary.get('groups', {}).get('to_create', 0)}
-    - Groups to Update: {summary.get('groups', {}).get('to_update', 0)}
+    {''.join(group_changes)}
     """
                 elif sync_mode == 'licenses':
                     content = f"""
@@ -269,7 +288,7 @@ class ReportManager:
     - Configs Needing Update: {summary.get('configs', {}).get('to_update', 0)}
     """
                 else:  # full mode
-                    delta_stats = report.get('summary', {}).get('devices', {})
+                    delta_stats = report.get('summary', {}).get('delta', {})
                     content = f"""
     Full Sync Analysis:
     Device Status:
@@ -301,12 +320,40 @@ class ReportManager:
     """
                 elif sync_mode == 'groups':
                     group_summary = summary.get('groups', {})
+                    changes = report.get('changes', {})
+                    
+                    # Get detailed group changes from the changes list
+                    created_groups = [g for g in changes.get('groups', []) if g.get('action') == 'create']
+                    updated_groups = [g for g in changes.get('groups', []) if g.get('action') == 'update']
+                    orphaned_groups = [g for g in changes.get('groups', []) if g.get('action') == 'orphaned']
+                    error_groups = [g for g in changes.get('groups', []) if g.get('action') == 'error']
+                    
+                    # Prepare group details output
+                    group_details = ""
+                    if created_groups and len(created_groups) <= 10:
+                        group_details += "\nCreated Groups:\n"
+                        for g in created_groups:
+                            group_details += f"  - {g.get('group')} (Path: {g.get('path', 'N/A')})\n"
+                    
+                    if updated_groups and len(updated_groups) <= 10:
+                        group_details += "\nUpdated Groups:\n"
+                        for g in updated_groups:
+                            updates = ", ".join(g.get('updates', []))
+                            group_details += f"  - {g.get('group')} (Updates: {updates})\n"
+                    
+                    if orphaned_groups and len(orphaned_groups) <= 10:
+                        group_details += "\nPreserved Orphaned Groups:\n"
+                        for g in orphaned_groups:
+                            group_details += f"  - {g.get('group')} (ID: {g.get('id', 'N/A')})\n"
+                    
                     content = f"""
     Group Changes:
     - Total Processed: {group_summary.get('total_processed', 0)}
     - Created: {group_summary.get('created', 0)}
     - Updated: {group_summary.get('updated', 0)}
+    - Preserved (Orphaned): {len(orphaned_groups)}
     - Failed: {group_summary.get('failed', 0)}
+    {group_details}
     """
                 elif sync_mode == 'licenses':
                     license_summary = summary.get('licenses', {})

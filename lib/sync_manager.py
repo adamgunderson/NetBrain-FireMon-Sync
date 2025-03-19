@@ -1182,9 +1182,10 @@ class SyncManager:
                 })
 
     def _generate_dry_run_report(self, nb_devices: List[Dict[str, Any]], 
-                             fm_devices: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Generate report for dry run mode"""
-        return {
+                         fm_devices: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Generate report for dry run mode with enhanced group information"""
+        # Start with the basic report structure
+        report = {
             'timestamp': datetime.utcnow().isoformat(),
             'sync_mode': self.config_manager.sync_config.sync_mode,
             'dry_run': True,
@@ -1201,6 +1202,41 @@ class SyncManager:
             'delta': self.device_delta,
             'execution_time': (datetime.utcnow() - self.current_sync_start).total_seconds()
         }
+        
+        # Add group-specific data when in groups mode
+        if self.config_manager.sync_config.sync_mode == 'groups':
+            try:
+                # Get sites from NetBrain if available
+                if hasattr(self, 'netbrain') and hasattr(self.netbrain, 'get_sites'):
+                    nb_sites = self.netbrain.get_sites()
+                    report['delta']['sites'] = nb_sites
+                    report['summary']['groups'] = {
+                        'total_sites': len(nb_sites),
+                        'to_create': 0,
+                        'to_update': 0
+                    }
+                    
+                    # Get FireMon groups
+                    if hasattr(self, 'firemon') and hasattr(self.firemon, 'get_device_groups'):
+                        fm_groups = self.firemon.get_device_groups()
+                        fm_group_names = {g['name'] for g in fm_groups}
+                        
+                        # Count sites that would need group creation
+                        site_names = {site['sitePath'].split('/')[-1] for site in nb_sites if 'sitePath' in site}
+                        report['summary']['groups']['to_create'] = len(site_names - fm_group_names)
+                        
+                        # Placeholder for common names that might need updates
+                        common_names = site_names.intersection(fm_group_names)
+                        report['summary']['groups']['to_update'] = len(common_names)
+                    
+                # Add any group changes already tracked
+                if hasattr(self, 'changes') and 'groups' in self.changes:
+                    report['changes'] = {'groups': self.changes['groups']}
+                    
+            except Exception as e:
+                logging.error(f"Error generating group data for dry run report: {str(e)}")
+        
+        return report
 
     def _generate_summary(self) -> Dict[str, Any]:
         """Generate summary of sync operations"""
