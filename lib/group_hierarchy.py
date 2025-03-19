@@ -475,8 +475,7 @@ class GroupHierarchyManager:
     def sync_device_group_membership(self, device_id: int, site_path: str, dry_run: bool = False) -> List[Dict[str, Any]]:
         """
         Sync device group membership based on site path
-        Modified to be additive only - devices are added to groups based on site path
-        but existing memberships are preserved
+        Modified to only add devices to the most specific (leaf) group in the path
         
         Args:
             device_id: FireMon device ID
@@ -492,63 +491,81 @@ class GroupHierarchyManager:
             current_groups = self.firemon.get_device_groups(device_id)
             current_group_ids = {g['id'] for g in current_groups}
             
-            # Get target groups based on site path
-            target_groups = set()
+            # Extract only the leaf group (last part of the path)
             path_parts = site_path.split('/')
-            current_path = ''
+            if len(path_parts) <= 1:
+                logging.warning(f"Invalid site path format for device {device_id}: {site_path}")
+                return changes
             
-            for part in path_parts[1:]:  # Skip root group
-                if current_path:
-                    current_path += '/'
-                current_path += part
-                
-                group = self.group_cache.get(current_path)
-                if not group:
-                    # Search for group and cache it
-                    group = self.firemon.find_group_by_path(current_path)
-                    if group:
-                        self.group_cache[current_path] = group
-                        target_groups.add(group['id'])
-                else:
-                    target_groups.add(group['id'])
-
-            # Calculate group changes - only add, don't remove
-            groups_to_add = target_groups - current_group_ids
+            # Find the full path to the leaf group
+            full_leaf_path = '/'.join(path_parts)
+            leaf_group_name = path_parts[-1]
+            
+            logging.debug(f"Looking for leaf group '{leaf_group_name}' (path: {full_leaf_path}) for device {device_id}")
+            
+            # Try to find the group by path
+            leaf_group = self.firemon.find_group_by_path(full_leaf_path) 
+            
+            # If not found, try direct lookup by name as fallback
+            if not leaf_group:
+                fm_groups = self.firemon.get_device_groups()
+                leaf_group = next((g for g in fm_groups if g['name'] == leaf_group_name), None)
+            
+            if not leaf_group:
+                logging.warning(f"Leaf group '{leaf_group_name}' not found for device {device_id}")
+                return changes
+            
+            # Check if device is already in this group
+            if leaf_group['id'] in current_group_ids:
+                logging.debug(f"Device {device_id} is already in leaf group '{leaf_group_name}'")
+                return changes
             
             if not dry_run:
-                # Add device to new groups
-                for group_id in groups_to_add:
-                    try:
-                        self.firemon.add_device_to_group(group_id, device_id)
-                        changes.append({
-                            'action': 'add_to_group',
-                            'group_id': group_id,
-                            'device_id': device_id,
-                            'status': 'success'
-                        })
-                    except Exception as e:
-                        changes.append({
-                            'action': 'error',
-                            'group_id': group_id,
-                            'device_id': device_id,
-                            'error': str(e)
-                        })
-            else:
-                # Record planned changes for dry run
-                for group_id in groups_to_add:
+                # Add device to the leaf group
+                try:
+                    self.firemon.add_device_to_group(leaf_group['id'], device_id)
                     changes.append({
                         'action': 'add_to_group',
-                        'group_id': group_id,
+                        'group_id': leaf_group['id'],
+                        'group_name': leaf_group_name,
                         'device_id': device_id,
-                        'status': 'dry_run'
+                        'status': 'success'
                     })
+                    logging.info(f"Added device {device_id} to leaf group '{leaf_group_name}'")
+                except Exception as e:
+                    changes.append({
+                        'action': 'error',
+                        'group_id': leaf_group['id'],
+                        'group_name': leaf_group_name,
+                        'device_id': device_id,
+                        'error': str(e),
+                        'status': 'error'
+                    })
+                    logging.error(f"Error adding device {device_id} to group '{leaf_group_name}': {str(e)}")
+            else:
+                # Record planned changes for dry run
+                changes.append({
+                    'action': 'add_to_group',
+                    'group_id': leaf_group['id'],
+                    'group_name': leaf_group_name,
+                    'device_id': device_id,
+                    'status': 'dry_run'
+                })
+                logging.info(f"Would add device {device_id} to leaf group '{leaf_group_name}' (dry run)")
 
             return changes
             
         except Exception as e:
             logging.error(f"Error syncing device {device_id} group membership: {str(e)}")
-            raise
-
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.exception("Detailed error trace:")
+            changes.append({
+                'action': 'error',
+                'device_id': device_id,
+                'error': str(e),
+                'status': 'error'
+            })
+            return changes
     def handle_orphaned_groups(self, processed_groups: Set[str], dry_run: bool = False) -> List[Dict[str, Any]]:
         """
         Log groups that exist in FireMon but not in NetBrain
