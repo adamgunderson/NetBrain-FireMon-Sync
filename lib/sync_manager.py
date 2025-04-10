@@ -1322,7 +1322,8 @@ class SyncManager:
                         'parent_id': group.get('parentId')
                     })
             
-            # Analyze device assignments to leaf groups
+            # FIXED: Analyze device assignments to leaf groups using direct lookup for all NetBrain devices
+            # This modification avoids relying on device delta for matching
             for device in nb_devices:
                 site_path = device.get('site', '')
                 if not site_path or site_path == 'My Network':
@@ -1339,6 +1340,8 @@ class SyncManager:
                 # Check if leaf group exists in FireMon
                 fm_group = fm_groups_by_name.get(leaf_group_name)
                 
+                # Add to device assignments regardless of FireMon device existence
+                # This ensures we generate assignments for all NetBrain devices
                 result['device_assignments'].append({
                     'device_name': device.get('hostname', 'Unknown'),
                     'device_ip': device.get('mgmtIP', 'Unknown'),
@@ -1350,7 +1353,7 @@ class SyncManager:
                 })
             
             return result
-            
+                
         except Exception as e:
             logging.error(f"Error analyzing group sync for dry run: {str(e)}")
             if logging.getLogger().isEnabledFor(logging.DEBUG):

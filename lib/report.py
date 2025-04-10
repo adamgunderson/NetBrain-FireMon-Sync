@@ -230,25 +230,26 @@ class ReportManager:
             
             # Header section is common for all modes
             header = f"""
-    Sync Operation Summary ({sync_mode} mode{' - Dry Run' if report.get('dry_run') else ''})
-    ================================================
-    Timestamp: {report['timestamp']}
-    Execution Time: {execution_time_str}
-    """
+Sync Operation Summary ({sync_mode} mode{' - Dry Run' if report.get('dry_run') else ''})
+================================================
+Timestamp: {report['timestamp']}
+Execution Time: {execution_time_str}
+"""
 
             # Content varies based on sync mode and dry run status
+            content = ""
             if report.get('dry_run'):
                 if sync_mode == 'devices':
                     # Device mode content - unchanged
                     delta_stats = report.get('summary', {}).get('delta', {})
                     content = f"""
-    Device Analysis:
-    - Total in NetBrain: {delta_stats.get('total_in_netbrain', 0)}
-    - Total in FireMon: {delta_stats.get('total_in_firemon', 0)}
-    - Only in NetBrain: {delta_stats.get('only_in_netbrain', 0)}
-    - Only in FireMon: {delta_stats.get('only_in_firemon', 0)}
-    - Devices with Differences: {delta_stats.get('different', 0)}
-    """
+Device Analysis:
+- Total in NetBrain: {delta_stats.get('total_in_netbrain', 0)}
+- Total in FireMon: {delta_stats.get('total_in_firemon', 0)}
+- Only in NetBrain: {delta_stats.get('only_in_netbrain', 0)}
+- Only in FireMon: {delta_stats.get('only_in_firemon', 0)}
+- Devices with Differences: {delta_stats.get('different', 0)}
+"""
                 elif sync_mode == 'groups':
                     # Enhanced group mode content
                     group_analysis = report.get('group_analysis', {})
@@ -259,12 +260,12 @@ class ReportManager:
                     
                     # Generate group summary
                     content = f"""
-    Group Synchronization Analysis:
-    - Groups to Create: {len(groups_to_create)}
-    - Groups to Update: {len(groups_to_update)}
-    - Orphaned Groups (will be preserved): {len(orphaned_groups)}
-    - Device Assignments to Process: {len(device_assignments)}
-    """
+Group Synchronization Analysis:
+- Groups to Create: {len(groups_to_create)}
+- Groups to Update: {len(groups_to_update)}
+- Orphaned Groups (will be preserved): {len(orphaned_groups)}
+- Device Assignments to Process: {len(device_assignments)}
+"""
                     
                     # Add details about groups to create (limit to 15 for readability)
                     if groups_to_create:
@@ -306,50 +307,50 @@ class ReportManager:
                 elif sync_mode == 'licenses':
                     # License mode content - unchanged
                     content = f"""
-    License Analysis:
-    - Total Devices to Process: {summary.get('licenses', {}).get('total_processed', 0)}
-    - Licenses to Add: {summary.get('licenses', {}).get('to_add', 0)}
-    - Licenses to Remove: {summary.get('licenses', {}).get('to_remove', 0)}
-    """
+License Analysis:
+- Total Devices to Process: {summary.get('licenses', {}).get('total_processed', 0)}
+- Licenses to Add: {summary.get('licenses', {}).get('to_add', 0)}
+- Licenses to Remove: {summary.get('licenses', {}).get('to_remove', 0)}
+"""
                 elif sync_mode == 'configs':
                     # Config mode content - unchanged
                     content = f"""
-    Configuration Analysis:
-    - Total Devices to Check: {summary.get('configs', {}).get('total_processed', 0)}
-    - Configs Needing Update: {summary.get('configs', {}).get('to_update', 0)}
-    """
+Configuration Analysis:
+- Total Devices to Check: {summary.get('configs', {}).get('total_processed', 0)}
+- Configs Needing Update: {summary.get('configs', {}).get('to_update', 0)}
+"""
                 else:  # full mode
                     # Full mode content - unchanged
                     delta_stats = report.get('summary', {}).get('delta', {})
                     content = f"""
-    Full Sync Analysis:
-    Device Status:
-    - Total in NetBrain: {delta_stats.get('total_in_netbrain', 0)}
-    - Total in FireMon: {delta_stats.get('total_in_firemon', 0)}
-    - Only in NetBrain: {delta_stats.get('only_in_netbrain', 0)}
-    - Only in FireMon: {delta_stats.get('only_in_firemon', 0)}
-    - Devices with Differences: {delta_stats.get('different', 0)}
+Full Sync Analysis:
+Device Status:
+- Total in NetBrain: {delta_stats.get('total_in_netbrain', 0)}
+- Total in FireMon: {delta_stats.get('total_in_firemon', 0)}
+- Only in NetBrain: {delta_stats.get('only_in_netbrain', 0)}
+- Only in FireMon: {delta_stats.get('only_in_firemon', 0)}
+- Devices with Differences: {delta_stats.get('different', 0)}
 
-    Group Status:
-    - Groups to Create/Update: {summary.get('groups', {}).get('to_update', 0)}
+Group Status:
+- Groups to Create/Update: {summary.get('groups', {}).get('to_update', 0)}
 
-    License Status:
-    - Licenses to Adjust: {summary.get('licenses', {}).get('to_update', 0)}
+License Status:
+- Licenses to Adjust: {summary.get('licenses', {}).get('to_update', 0)}
 
-    Config Status:
-    - Configs to Update: {summary.get('configs', {}).get('to_update', 0)}
-    """
+Config Status:
+- Configs to Update: {summary.get('configs', {}).get('to_update', 0)}
+"""
             else:
                 # Non-dry run mode - show actual changes (no changes needed here)
                 if sync_mode == 'devices':
                     device_summary = summary.get('devices', {})
                     content = f"""
-    Device Changes:
-    - Total Processed: {device_summary.get('total_processed', 0)}
-    - Added: {device_summary.get('added', 0)}
-    - Updated: {device_summary.get('updated', 0)}
-    - Failed: {device_summary.get('failed', 0)}
-    """
+Device Changes:
+- Total Processed: {device_summary.get('total_processed', 0)}
+- Added: {device_summary.get('added', 0)}
+- Updated: {device_summary.get('updated', 0)}
+- Failed: {device_summary.get('failed', 0)}
+"""
                 elif sync_mode == 'groups':
                     group_summary = summary.get('groups', {})
                     changes = report.get('changes', {})
@@ -379,56 +380,56 @@ class ReportManager:
                             group_details += f"  - {g.get('group')} (ID: {g.get('id', 'N/A')})\n"
                     
                     content = f"""
-    Group Changes:
-    - Total Processed: {group_summary.get('total_processed', 0)}
-    - Created: {group_summary.get('created', 0)}
-    - Updated: {group_summary.get('updated', 0)}
-    - Preserved (Orphaned): {len(orphaned_groups)}
-    - Failed: {group_summary.get('failed', 0)}
-    {group_details}
-    """
+Group Changes:
+- Total Processed: {group_summary.get('total_processed', 0)}
+- Created: {group_summary.get('created', 0)}
+- Updated: {group_summary.get('updated', 0)}
+- Preserved (Orphaned): {len(orphaned_groups)}
+- Failed: {group_summary.get('failed', 0)}
+{group_details}
+"""
                 elif sync_mode == 'licenses':
                     license_summary = summary.get('licenses', {})
                     content = f"""
-    License Changes:
-    - Total Processed: {license_summary.get('total_processed', 0)}
-    - Added: {license_summary.get('added', 0)}
-    - Removed: {license_summary.get('removed', 0)}
-    - Failed: {license_summary.get('failed', 0)}
-    """
+License Changes:
+- Total Processed: {license_summary.get('total_processed', 0)}
+- Added: {license_summary.get('added', 0)}
+- Removed: {license_summary.get('removed', 0)}
+- Failed: {license_summary.get('failed', 0)}
+"""
                 elif sync_mode == 'configs':
                     config_summary = summary.get('configs', {})
                     content = f"""
-    Configuration Changes:
-    - Total Processed: {config_summary.get('total_processed', 0)}
-    - Updated: {config_summary.get('updated', 0)}
-    - Failed: {config_summary.get('failed', 0)}
-    """
+Configuration Changes:
+- Total Processed: {config_summary.get('total_processed', 0)}
+- Updated: {config_summary.get('updated', 0)}
+- Failed: {config_summary.get('failed', 0)}
+"""
                 else:  # full mode
                     content = f"""
-    Device Changes:
-    - Total Processed: {summary.get('devices', {}).get('total_processed', 0)}
-    - Added: {summary.get('devices', {}).get('added', 0)}
-    - Updated: {summary.get('devices', {}).get('updated', 0)}
-    - Failed: {summary.get('devices', {}).get('failed', 0)}
+Device Changes:
+- Total Processed: {summary.get('devices', {}).get('total_processed', 0)}
+- Added: {summary.get('devices', {}).get('added', 0)}
+- Updated: {summary.get('devices', {}).get('updated', 0)}
+- Failed: {summary.get('devices', {}).get('failed', 0)}
 
-    Group Changes:
-    - Total Processed: {summary.get('groups', {}).get('total_processed', 0)}
-    - Created: {summary.get('groups', {}).get('created', 0)}
-    - Updated: {summary.get('groups', {}).get('updated', 0)}
-    - Failed: {summary.get('groups', {}).get('failed', 0)}
+Group Changes:
+- Total Processed: {summary.get('groups', {}).get('total_processed', 0)}
+- Created: {summary.get('groups', {}).get('created', 0)}
+- Updated: {summary.get('groups', {}).get('updated', 0)}
+- Failed: {summary.get('groups', {}).get('failed', 0)}
 
-    License Changes:
-    - Total Processed: {summary.get('licenses', {}).get('total_processed', 0)}
-    - Added: {summary.get('licenses', {}).get('added', 0)}
-    - Removed: {summary.get('licenses', {}).get('removed', 0)}
-    - Failed: {summary.get('licenses', {}).get('failed', 0)}
+License Changes:
+- Total Processed: {summary.get('licenses', {}).get('total_processed', 0)}
+- Added: {summary.get('licenses', {}).get('added', 0)}
+- Removed: {summary.get('licenses', {}).get('removed', 0)}
+- Failed: {summary.get('licenses', {}).get('failed', 0)}
 
-    Configuration Changes:
-    - Total Processed: {summary.get('configs', {}).get('total_processed', 0)}
-    - Updated: {summary.get('configs', {}).get('updated', 0)}
-    - Failed: {summary.get('configs', {}).get('failed', 0)}
-    """
+Configuration Changes:
+- Total Processed: {summary.get('configs', {}).get('total_processed', 0)}
+- Updated: {summary.get('configs', {}).get('updated', 0)}
+- Failed: {summary.get('configs', {}).get('failed', 0)}
+"""
 
             # Footer is common for all modes
             footer = "\nFull details are available in the report file."
@@ -440,9 +441,9 @@ class ReportManager:
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 logging.exception("Detailed error trace for console summary:")
             return """
-    Error generating sync summary.
-    Please check the logs and report file for details.
-    """
+Error generating sync summary.
+Please check the logs and report file for details.
+"""
 
     def _format_device_list(self, devices: List[Dict[str, Any]], source: str) -> str:
         """
@@ -548,7 +549,7 @@ class ReportManager:
 
     def generate_html_report(self, report: Dict[str, Any]) -> str:
         """
-        Generate HTML report
+        Generate HTML report with enhanced group sync support
         
         Args:
             report: Report dictionary
@@ -574,6 +575,7 @@ class ReportManager:
                 .device-details {{ margin-left: 20px; }}
                 .section {{ margin-bottom: 30px; }}
                 .diff-highlight {{ background-color: #fff3cd; }}
+                .group-section {{ margin-top: 20px; }}
             </style>
         </head>
         <body>
@@ -594,7 +596,16 @@ class ReportManager:
         
         # Generate HTML sections
         summary_html = self._generate_summary_html(report['summary'])
-        delta_html = self._generate_delta_html(report.get('delta', {})) if report.get('dry_run') else ""
+        
+        # Handle delta and group analysis
+        if report.get('dry_run'):
+            delta_html = self._generate_delta_html(
+                report.get('delta', {}), 
+                report.get('group_analysis', {}) if report.get('sync_mode') == 'groups' else None
+            )
+        else:
+            delta_html = ""
+            
         changes_html = self._generate_changes_html(report['changes'])
         validation_html = self._generate_validation_html(report.get('validation', {}))
         
@@ -605,6 +616,168 @@ class ReportManager:
             changes_html=changes_html,
             validation_html=validation_html
         )
+
+    def _generate_delta_html(self, delta: Dict[str, Any], group_analysis: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Generate HTML for delta section with improved group analysis support
+        
+        Args:
+            delta: Dictionary containing device delta information
+            group_analysis: Optional dictionary containing group analysis information
+            
+        Returns:
+            HTML string
+        """
+        if not delta and not group_analysis:
+            return ""
+            
+        html = ""
+        
+        # Add device delta section if available
+        if delta:
+            devices_nb = delta.get('only_in_netbrain', [])
+            devices_fm = delta.get('only_in_firemon', [])
+            devices_diff = delta.get('different', [])
+            
+            html += f"""
+            <h2>Device Delta Analysis</h2>
+            <div class="delta-section">
+                <h3>Devices Only in NetBrain ({len(devices_nb)})</h3>
+                {self._generate_device_table_html(devices_nb, 'netbrain')}
+                
+                <h3>Devices Only in FireMon ({len(devices_fm)})</h3>
+                {self._generate_device_table_html(devices_fm, 'firemon')}
+                
+                <h3>Devices with Differences ({len(devices_diff)})</h3>
+                {self._generate_differences_table_html(devices_diff)}
+            </div>
+            """
+        
+        # Add group analysis section if available
+        if group_analysis:
+            groups_to_create = group_analysis.get('groups_to_create', [])
+            groups_to_update = group_analysis.get('groups_to_update', [])
+            orphaned_groups = group_analysis.get('orphaned_groups', [])
+            device_assignments = group_analysis.get('device_assignments', [])
+            
+            html += f"""
+            <h2>Group Sync Analysis</h2>
+            <div class="group-section">
+                <h3>Groups to Create ({len(groups_to_create)})</h3>
+                {self._generate_groups_table_html(groups_to_create, 'create')}
+                
+                <h3>Groups to Update ({len(groups_to_update)})</h3>
+                {self._generate_groups_table_html(groups_to_update, 'update')}
+                
+                <h3>Orphaned Groups ({len(orphaned_groups)})</h3>
+                {self._generate_groups_table_html(orphaned_groups, 'orphaned')}
+                
+                <h3>Device Group Assignments ({len(device_assignments)})</h3>
+                {self._generate_assignments_table_html(device_assignments)}
+            </div>
+            """
+            
+        return html
+
+    def _generate_groups_table_html(self, groups: List[Dict[str, Any]], mode: str) -> str:
+        """
+        Generate HTML table for group lists
+        
+        Args:
+            groups: List of group dictionaries
+            mode: Type of groups ('create', 'update', or 'orphaned')
+            
+        Returns:
+            HTML string for the table
+        """
+        if not groups:
+            return "<p>None</p>"
+            
+        # Define headers based on mode
+        if mode == 'create':
+            headers = ['Name', 'Path', 'Site ID']
+        elif mode == 'update':
+            headers = ['Name', 'Path', 'FireMon ID', 'Site ID']
+        else:  # orphaned
+            headers = ['Name', 'FireMon ID', 'Parent ID']
+        
+        html = """
+        <table>
+            <tr>
+        """
+        
+        # Add headers
+        for header in headers:
+            html += f"<th>{header}</th>"
+        html += "</tr>"
+        
+        # Add group rows
+        for group in groups:
+            html += "<tr>"
+            if mode == 'create':
+                html += f"""
+                    <td>{group.get('name', 'N/A')}</td>
+                    <td>{group.get('path', 'N/A')}</td>
+                    <td>{group.get('site_id', 'N/A')}</td>
+                """
+            elif mode == 'update':
+                html += f"""
+                    <td>{group.get('name', 'N/A')}</td>
+                    <td>{group.get('path', 'N/A')}</td>
+                    <td>{group.get('firemon_id', 'N/A')}</td>
+                    <td>{group.get('site_id', 'N/A')}</td>
+                """
+            else:  # orphaned
+                html += f"""
+                    <td>{group.get('name', 'N/A')}</td>
+                    <td>{group.get('id', 'N/A')}</td>
+                    <td>{group.get('parent_id', 'N/A')}</td>
+                """
+            html += "</tr>"
+        
+        html += "</table>"
+        return html
+
+    def _generate_assignments_table_html(self, assignments: List[Dict[str, Any]]) -> str:
+        """
+        Generate HTML table for device group assignments
+        
+        Args:
+            assignments: List of device assignment dictionaries
+            
+        Returns:
+            HTML string for the table
+        """
+        if not assignments:
+            return "<p>None</p>"
+            
+        html = """
+        <table>
+            <tr>
+                <th>Device Name</th>
+                <th>IP Address</th>
+                <th>Target Group</th>
+                <th>Full Path</th>
+                <th>Status</th>
+            </tr>
+        """
+        
+        for assignment in assignments:
+            status_class = "error" if not assignment.get('group_exists') else "success"
+            status_text = "Group needs creation" if not assignment.get('group_exists') else "Ready"
+            
+            html += f"""
+            <tr>
+                <td>{assignment.get('device_name', 'N/A')}</td>
+                <td>{assignment.get('device_ip', 'N/A')}</td>
+                <td>{assignment.get('leaf_group', 'N/A')}</td>
+                <td>{assignment.get('full_path', 'N/A')}</td>
+                <td class="{status_class}">{status_text}</td>
+            </tr>
+            """
+        
+        html += "</table>"
+        return html
 
     def _generate_summary_html(self, summary: Dict[str, Any]) -> str:
         """Generate HTML for summary section"""
@@ -636,29 +809,6 @@ class ReportManager:
                 <td class="error">{summary.get('configs', {}).get('failed', 0)}</td>
             </tr>
         </table>
-        """
-
-    def _generate_delta_html(self, delta: Dict[str, Any]) -> str:
-        """Generate HTML for delta section"""
-        if not delta:
-            return ""
-            
-        devices_nb = delta.get('only_in_netbrain', [])
-        devices_fm = delta.get('only_in_firemon', [])
-        devices_diff = delta.get('different', [])
-        
-        return f"""
-        <h2>Device Delta Analysis</h2>
-        <div class="delta-section">
-            <h3>Devices Only in NetBrain ({len(devices_nb)})</h3>
-            {self._generate_device_table_html(devices_nb, 'netbrain')}
-            
-            <h3>Devices Only in FireMon ({len(devices_fm)})</h3>
-            {self._generate_device_table_html(devices_fm, 'firemon')}
-            
-            <h3>Devices with Differences ({len(devices_diff)})</h3>
-            {self._generate_differences_table_html(devices_diff)}
-        </div>
         """
 
     def _generate_device_table_html(self, devices: List[Dict[str, Any]], source: str) -> str:
